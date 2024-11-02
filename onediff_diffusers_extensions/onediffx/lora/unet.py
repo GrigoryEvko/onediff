@@ -5,7 +5,6 @@ import torch
 
 from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from diffusers.utils import is_accelerate_available
-from onediff.infer_compiler import DeployableModule
 from onediff.utils import logger
 
 from .utils import _load_lora_and_optionally_fuse, is_peft_available
@@ -192,10 +191,7 @@ def _load_attn_procs(
             )
 
         for key, value_dict in lora_grouped_dict.items():
-            if isinstance(self, DeployableModule):
-                attn_processor = self._torch_module
-            else:
-                attn_processor = self
+            attn_processor = self
             for sub_key in key.split("."):
                 attn_processor = getattr(attn_processor, sub_key)
 

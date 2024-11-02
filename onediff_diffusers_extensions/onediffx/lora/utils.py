@@ -14,16 +14,12 @@ if version.parse(diffusers.__version__) >= version.parse("0.22.0"):
 else:
     is_peft_available = lambda: False
 
-from onediff.infer_compiler.backends.oneflow.param_utils import (
-    update_graph_related_tensor,
-)
 
 if version.parse(diffusers.__version__) <= version.parse("0.20.0"):
     from diffusers.loaders import PatchedLoraProjection
 else:
     from diffusers.models.lora import PatchedLoraProjection
 
-from onediff.infer_compiler.backends.oneflow.dual_module import DualModule
 
 
 _adapter_layer_names = ()
@@ -154,8 +150,6 @@ def _set_adapter(
     if delta_weight is not None:
         fused_weight = self.weight.data.float() + delta_weight
         self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
-        update_graph_related_tensor(self)
-
 
 def _delete_adapter(
     self: Union[torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d],
@@ -223,8 +217,6 @@ def _load_lora_and_optionally_fuse(
                 f"[OneDiffX fuse_lora] Only Linear and Conv2d can fuse lora, but got type {type(self)}"
             )
 
-    if isinstance(self, DualModule):
-        self = self._torch_module
     if isinstance(self, PatchedLoraProjection):
         self = self.regular_linear_layer
 
@@ -268,7 +260,6 @@ def _load_lora_and_optionally_fuse(
         lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
         fused_weight = self.weight.data.float() + lora_weight
         self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
-        update_graph_related_tensor(self)
 
 
 def _unfuse_lora(
@@ -278,8 +269,6 @@ def _unfuse_lora(
     assert isinstance(self, (torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d))
     if not hasattr(self, "adapter_names"):
         return
-    if isinstance(self, DualModule):
-        self = self._torch_module
     if isinstance(self, PatchedLoraProjection):
         self = self.regular_linear_layer
 
@@ -307,7 +296,6 @@ def _unfuse_lora(
 
     if delta_weight is not None:
         self.weight.data -= delta_weight
-        update_graph_related_tensor(self)
 
 
 # the code is referenced from https://github.com/huggingface/diffusers/blob/ce9825b56bd8a6849e68b9590022e935400659e6/src/diffusers/loaders/lora_conversion_utils.py#L24
