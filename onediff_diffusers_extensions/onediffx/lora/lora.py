@@ -263,27 +263,23 @@ def load_lora_and_optionally_fuse(
             **kwargs,
         )
     else:
-        # Use GPU-direct loading when device is specified
+        # Pass device parameter to diffusers if specified
         if device is not None:
-            state_dict, network_alphas = _gpu_direct_load_state_dict(
-                pretrained_model_name_or_path_or_dict,
-                device=device,
-                **kwargs,
+            kwargs['device'] = device
+            
+        # for diffusers <= 0.20
+        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+            orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
+            LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
+                _maybe_map_sgm_blocks_to_diffusers
             )
-        else:
-            # for diffusers <= 0.20
-            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-                orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
-                LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
-                    _maybe_map_sgm_blocks_to_diffusers
-                )
-            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-                pretrained_model_name_or_path_or_dict,
-                unet_config=self.unet.config,
-                **kwargs,
-            )
-            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-                LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
+        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+            pretrained_model_name_or_path_or_dict,
+            unet_config=self.unet.config,
+            **kwargs,
+        )
+        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+            LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
 
     is_correct_format = all("lora" in key for key in state_dict.keys())
     if not is_correct_format:
@@ -470,8 +466,8 @@ def load_state_dict_cached(
 ) -> Tuple[Dict, Dict]:
     assert isinstance(lora, (str, Path, dict))
     if isinstance(lora, dict):
-        # If already a dict, use GPU-direct loading to extract network_alphas
-        return _gpu_direct_load_state_dict(lora, device=device, **kwargs)
+        # If already a dict, return as-is (diffusers will handle it)
+        return lora, {}
 
     global CachedLoRAs
     weight_name = kwargs.get("weight_name", None)
@@ -488,18 +484,14 @@ def load_state_dict_cached(
         )
         return CachedLoRAs[lora_name]
 
-    # Use GPU-direct loading when device is specified
+    # Pass device parameter to diffusers if specified
     if device is not None:
-        state_dict, network_alphas = _gpu_direct_load_state_dict(
-            lora,
-            device=device,
-            **kwargs,
-        )
-    else:
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-            lora,
-            **kwargs,
-        )
+        kwargs['device'] = device
+        
+    state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+        lora,
+        **kwargs,
+    )
 
     CachedLoRAs[lora_name] = (state_dict, network_alphas)
     logger.debug(f"[OneDiffX Cached LoRA] create cached lora of name: {str(lora_name)}")
