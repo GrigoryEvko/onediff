@@ -68,6 +68,7 @@ def load_and_fuse_lora(
     lora_scale: float = 1.0,
     offload_device="cuda",
     use_cache=False,
+    memory_efficient=True,
     **kwargs,
 ):
     return load_lora_and_optionally_fuse(
@@ -78,6 +79,7 @@ def load_and_fuse_lora(
         offload_device=offload_device,
         use_cache=use_cache,
         fuse=True,
+        memory_efficient=memory_efficient,
         **kwargs,
     )
 
@@ -92,6 +94,7 @@ def load_lora_and_optionally_fuse(
     lora_scale: Optional[float] = None,
     offload_device="cuda",
     use_cache=False,
+    memory_efficient=True,
     **kwargs,
 ) -> None:
     if not is_onediffx_lora_available:
@@ -134,7 +137,8 @@ def load_lora_and_optionally_fuse(
 
     self = pipeline
 
-    if use_cache:
+    # Skip caching when memory_efficient is True to reduce memory usage
+    if use_cache and not memory_efficient:
         state_dict, network_alphas = load_state_dict_cached(
             pretrained_model_name_or_path_or_dict,
             unet_config=self.unet.config,
@@ -170,6 +174,7 @@ def load_lora_and_optionally_fuse(
         offload_device=offload_device,
         use_cache=use_cache,
         fuse=fuse,
+        memory_efficient=memory_efficient,
     )
 
     # load lora weights into text encoder
@@ -187,6 +192,7 @@ def load_lora_and_optionally_fuse(
             adapter_name=adapter_name,
             _pipeline=self,
             fuse=fuse,
+            memory_efficient=memory_efficient,
         )
 
     text_encoder_2_state_dict = {
@@ -203,6 +209,7 @@ def load_lora_and_optionally_fuse(
             adapter_name=adapter_name,
             _pipeline=self,
             fuse=fuse,
+            memory_efficient=memory_efficient,
         )
 
 
@@ -358,7 +365,11 @@ def load_state_dict_cached(
     return state_dict, network_alphas
 
 
-CachedLoRAs = LRUCacheDict(100)
+# Reduced cache size from 100 to 10 for memory efficiency
+# Set ONEDIFFX_LORA_CACHE_SIZE=0 to disable caching entirely
+import os
+CACHE_SIZE = int(os.environ.get("ONEDIFFX_LORA_CACHE_SIZE", "10"))
+CachedLoRAs = LRUCacheDict(CACHE_SIZE) if CACHE_SIZE > 0 else {}
 
 
 def create_adapter_names(pipe):
@@ -367,3 +378,12 @@ def create_adapter_names(pipe):
         if result not in pipe._adapter_names:
             return result
     raise RuntimeError("Too much LoRA loaded")
+
+
+def clear_lora_cache():
+    """Clear the LoRA cache to free memory"""
+    global CachedLoRAs
+    if hasattr(CachedLoRAs, 'clear'):
+        CachedLoRAs.clear()
+        logger.info("[OneDiffX] Cleared LoRA cache")
+    return
