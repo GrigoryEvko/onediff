@@ -1,13 +1,16 @@
 import functools
+import os
 import warnings
 from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import diffusers
-
+import safetensors
+import safetensors.torch
 import torch
 from diffusers.loaders import LoraLoaderMixin
+from diffusers.utils import _get_model_file
 from onediff.utils import logger
 from packaging import version
 
@@ -59,6 +62,117 @@ def deprecated():
 USE_PEFT_BACKEND = False
 
 
+def _gpu_direct_load_state_dict(
+    pretrained_model_name_or_path_or_dict: Union[str, Path, Dict[str, torch.Tensor]],
+    device: Union[str, torch.device] = None,
+    **kwargs,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    """
+    Load state dict directly to GPU, bypassing CPU loading.
+
+    This function handles loading LoRA weights directly to the specified device,
+    avoiding the CPU memory footprint from diffusers' default loading behavior.
+    """
+    # If already a dict, extract network_alphas from it
+    if isinstance(pretrained_model_name_or_path_or_dict, dict):
+        # Extract network alphas from state dict keys ending with .alpha
+        network_alphas = {}
+        state_dict = {}
+        for key, value in pretrained_model_name_or_path_or_dict.items():
+            if key.endswith(".alpha"):
+                # Extract the module name and store alpha value
+                module_name = key[:-6]  # Remove ".alpha" suffix
+                network_alphas[module_name] = value.item() if hasattr(value, "item") else value
+            else:
+                state_dict[key] = value
+        return state_dict, network_alphas
+
+    # Extract parameters
+    weight_name = kwargs.get("weight_name", None)
+    cache_dir = kwargs.get("cache_dir", None)
+    force_download = kwargs.get("force_download", False)
+    proxies = kwargs.get("proxies", None)
+    local_files_only = kwargs.get("local_files_only", False)
+    token = kwargs.get("token", None)
+    revision = kwargs.get("revision", None)
+    subfolder = kwargs.get("subfolder", None)
+
+    # Determine device
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Try to load safetensors first
+    model_file = None
+    if weight_name is None or weight_name.endswith(".safetensors"):
+        try:
+            model_file = _get_model_file(
+                pretrained_model_name_or_path_or_dict,
+                weights_name=weight_name or "pytorch_lora_weights.safetensors",
+                cache_dir=cache_dir,
+                force_download=force_download,
+                proxies=proxies,
+                local_files_only=local_files_only,
+                token=token,
+                revision=revision,
+                subfolder=subfolder,
+            )
+            # Load directly to GPU
+            state_dict = safetensors.torch.load_file(model_file, device=str(device))
+            
+            # Extract network alphas from metadata
+            network_alphas = {}
+            try:
+                with safetensors.safe_open(model_file, framework="pt") as f:
+                    metadata = f.metadata()
+                    if metadata:
+                        # Look for alpha values in metadata
+                        for key, value in metadata.items():
+                            if ".alpha" in key:
+                                try:
+                                    network_alphas[key] = float(value)
+                                except (ValueError, TypeError):
+                                    pass
+            except Exception:
+                pass
+            
+            # Also extract from state dict keys ending with .alpha
+            alpha_keys = [k for k in state_dict.keys() if k.endswith(".alpha")]
+            for key in alpha_keys:
+                module_name = key[:-6]  # Remove ".alpha" suffix
+                alpha_value = state_dict.pop(key)
+                network_alphas[module_name] = alpha_value.item() if hasattr(alpha_value, "item") else alpha_value
+            
+            return state_dict, network_alphas
+        except Exception:
+            pass
+
+    # Fall back to torch format
+    if model_file is None:
+        model_file = _get_model_file(
+            pretrained_model_name_or_path_or_dict,
+            weights_name=weight_name or "pytorch_lora_weights.bin",
+            cache_dir=cache_dir,
+            force_download=force_download,
+            proxies=proxies,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+            subfolder=subfolder,
+        )
+        # Load directly to GPU
+        state_dict = torch.load(model_file, map_location=device)
+        
+        # Extract network alphas from state dict keys ending with .alpha
+        network_alphas = {}
+        alpha_keys = [k for k in state_dict.keys() if k.endswith(".alpha")]
+        for key in alpha_keys:
+            module_name = key[:-6]  # Remove ".alpha" suffix
+            alpha_value = state_dict.pop(key)
+            network_alphas[module_name] = alpha_value.item() if hasattr(alpha_value, "item") else alpha_value
+        
+        return state_dict, network_alphas
+
+
 @deprecated()
 def load_and_fuse_lora(
     pipeline: LoraLoaderMixin,
@@ -69,6 +183,7 @@ def load_and_fuse_lora(
     offload_device="cuda",
     use_cache=False,
     memory_efficient=True,
+    device: Union[str, torch.device] = None,
     **kwargs,
 ):
     return load_lora_and_optionally_fuse(
@@ -80,6 +195,7 @@ def load_and_fuse_lora(
         use_cache=use_cache,
         fuse=True,
         memory_efficient=memory_efficient,
+        device=device,
         **kwargs,
     )
 
@@ -95,6 +211,7 @@ def load_lora_and_optionally_fuse(
     offload_device="cuda",
     use_cache=False,
     memory_efficient=True,
+    device: Union[str, torch.device] = None,
     **kwargs,
 ) -> None:
     if not is_onediffx_lora_available:
@@ -141,23 +258,32 @@ def load_lora_and_optionally_fuse(
     if use_cache and not memory_efficient:
         state_dict, network_alphas = load_state_dict_cached(
             pretrained_model_name_or_path_or_dict,
+            device=device,
             unet_config=self.unet.config,
             **kwargs,
         )
     else:
-        # for diffusers <= 0.20
-        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-            orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
-            LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
-                _maybe_map_sgm_blocks_to_diffusers
+        # Use GPU-direct loading when device is specified
+        if device is not None:
+            state_dict, network_alphas = _gpu_direct_load_state_dict(
+                pretrained_model_name_or_path_or_dict,
+                device=device,
+                **kwargs,
             )
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-            pretrained_model_name_or_path_or_dict,
-            unet_config=self.unet.config,
-            **kwargs,
-        )
-        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-            LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
+        else:
+            # for diffusers <= 0.20
+            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+                orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
+                LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
+                    _maybe_map_sgm_blocks_to_diffusers
+                )
+            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+                pretrained_model_name_or_path_or_dict,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
+            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+                LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
 
     is_correct_format = all("lora" in key for key in state_dict.keys())
     if not is_correct_format:
@@ -339,27 +465,42 @@ class LRUCacheDict(OrderedDict):
 
 def load_state_dict_cached(
     lora: Union[str, Path, Dict[str, torch.Tensor]],
+    device: Union[str, torch.device] = None,
     **kwargs,
 ) -> Tuple[Dict, Dict]:
     assert isinstance(lora, (str, Path, dict))
     if isinstance(lora, dict):
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(lora, **kwargs)
-        return state_dict, network_alphas
+        # If already a dict, use GPU-direct loading to extract network_alphas
+        return _gpu_direct_load_state_dict(lora, device=device, **kwargs)
 
     global CachedLoRAs
     weight_name = kwargs.get("weight_name", None)
 
-    lora_name = str(lora) + (f"/{weight_name}" if weight_name else "")
+    # Include device in cache key to avoid device mismatches
+    device_str = str(device) if device is not None else "cpu"
+    lora_name = (
+        str(lora) + (f"/{weight_name}" if weight_name else "") + f"/{device_str}"
+    )
+
     if lora_name in CachedLoRAs:
         logger.debug(
             f"[OneDiffX Cached LoRA] get cached lora of name: {str(lora_name)}"
         )
         return CachedLoRAs[lora_name]
 
-    state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-        lora,
-        **kwargs,
-    )
+    # Use GPU-direct loading when device is specified
+    if device is not None:
+        state_dict, network_alphas = _gpu_direct_load_state_dict(
+            lora,
+            device=device,
+            **kwargs,
+        )
+    else:
+        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+            lora,
+            **kwargs,
+        )
+
     CachedLoRAs[lora_name] = (state_dict, network_alphas)
     logger.debug(f"[OneDiffX Cached LoRA] create cached lora of name: {str(lora_name)}")
     return state_dict, network_alphas
@@ -367,7 +508,6 @@ def load_state_dict_cached(
 
 # Reduced cache size from 100 to 10 for memory efficiency
 # Set ONEDIFFX_LORA_CACHE_SIZE=0 to disable caching entirely
-import os
 CACHE_SIZE = int(os.environ.get("ONEDIFFX_LORA_CACHE_SIZE", "10"))
 CachedLoRAs = LRUCacheDict(CACHE_SIZE) if CACHE_SIZE > 0 else {}
 
@@ -383,7 +523,7 @@ def create_adapter_names(pipe):
 def clear_lora_cache():
     """Clear the LoRA cache to free memory"""
     global CachedLoRAs
-    if hasattr(CachedLoRAs, 'clear'):
+    if hasattr(CachedLoRAs, "clear"):
         CachedLoRAs.clear()
         logger.info("[OneDiffX] Cleared LoRA cache")
     return

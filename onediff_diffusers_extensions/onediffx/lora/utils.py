@@ -12,14 +12,14 @@ if version.parse(diffusers.__version__) >= version.parse("0.22.0"):
     if is_peft_available():
         import peft
 else:
-    is_peft_available = lambda: False
+    def is_peft_available():
+        return False
 
 
 if version.parse(diffusers.__version__) <= version.parse("0.20.0"):
     from diffusers.loaders import PatchedLoraProjection
 else:
     from diffusers.models.lora import PatchedLoraProjection
-
 
 
 _adapter_layer_names = ()
@@ -39,7 +39,6 @@ def delete_lora_infos(
     self: Union[torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d],
     adapter_names: Optional[List[str]] = None,
 ) -> None:
-
     if adapter_names is None:
         adapter_names = list(self.adapter_names.copy())
     curr_adapter_names = self.adapter_names.copy()
@@ -98,7 +97,9 @@ def get_delta_weight(
     return lora_weight
 
 
-def offload_tensor(tensor: torch.Tensor, device: torch.device, clone: bool = False) -> torch.Tensor:
+def offload_tensor(
+    tensor: torch.Tensor, device: torch.device, clone: bool = False
+) -> torch.Tensor:
     cur_device = tensor.device
     if cur_device == device:
         # Avoid unnecessary cloning when already on target device
@@ -151,6 +152,7 @@ def _set_adapter(
     if delta_weight is not None:
         fused_weight = self.weight.data.float() + delta_weight
         self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
+
 
 def _delete_adapter(
     self: Union[torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d],
@@ -235,8 +237,13 @@ def _load_lora_and_optionally_fuse(
     # Preserve original dtype to save memory
     if memory_efficient:
         # Get LoRA weights in their original dtype
-        w_down = state_dict[down_key].to(device)
-        w_up = state_dict[up_key].to(device)
+        # If already on GPU, avoid redundant transfer
+        w_down = state_dict[down_key]
+        w_up = state_dict[up_key]
+        if w_down.device != device:
+            w_down = w_down.to(device)
+        if w_up.device != device:
+            w_up = w_up.to(device)
     else:
         # Original behavior - convert to float32
         w_down = state_dict[down_key].float().to(device)
@@ -253,15 +260,21 @@ def _load_lora_and_optionally_fuse(
     self.scaling[adapter_name] = lora_scale * alpha / rank
     self.r[adapter_name] = rank
     self.lora_alpha[adapter_name] = alpha
-    
+
     # Avoid cloning when memory_efficient is True and already on target device
-    if memory_efficient and str(w_down.device) == offload_device:
+    # Handle both string and torch.device types for comparison
+    w_down_device_str = str(w_down.device).replace(
+        "cuda:", "cuda"
+    )  # Normalize cuda:0 to cuda
+    offload_device_str = str(offload_device).replace("cuda:", "cuda")
+
+    if memory_efficient and w_down_device_str == offload_device_str:
         self.lora_A[adapter_name] = w_down
         self.lora_B[adapter_name] = w_up
     else:
         self.lora_A[adapter_name] = offload_tensor(w_down, offload_device)
         self.lora_B[adapter_name] = offload_tensor(w_up, offload_device)
-    
+
     self.adapter_names.add(adapter_name)
 
     if fuse:
@@ -275,20 +288,26 @@ def _load_lora_and_optionally_fuse(
                 "Otherwise, it may lead to accuracy issues, impacting the quality of the generated images."
             )
         self.active_adapter_names[adapter_name] = lora_scale
-        
+
         if memory_efficient:
             # Compute in float32 for accuracy, but avoid intermediate copies
             with torch.no_grad():
                 # Ensure computation happens in float32
                 w_up_float = w_up.float() if w_up.dtype != torch.float32 else w_up
-                w_down_float = w_down.float() if w_down.dtype != torch.float32 else w_down
-                lora_weight = get_delta_weight(self, w_up_float, w_down_float, self.scaling[adapter_name])
-                
+                w_down_float = (
+                    w_down.float() if w_down.dtype != torch.float32 else w_down
+                )
+                lora_weight = get_delta_weight(
+                    self, w_up_float, w_down_float, self.scaling[adapter_name]
+                )
+
                 # Apply directly to weight data
                 self.weight.data.add_(lora_weight.to(device=device, dtype=dtype))
         else:
             # Original behavior
-            lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
+            lora_weight = get_delta_weight(
+                self, w_up, w_down, self.scaling[adapter_name]
+            )
             fused_weight = self.weight.data.float() + lora_weight
             self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
 
