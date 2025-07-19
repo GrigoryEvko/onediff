@@ -240,7 +240,6 @@ def _load_lora_and_optionally_fuse(
     track_dict_memory(f"state_dict at start of {adapter_name}", state_dict)
     
     # Track tensor loading and device transfers with detailed lifecycle
-    # Note: We peek at the tensors first for monitoring
     original_down = state_dict[down_key]
     original_up = state_dict[up_key]
     
@@ -248,8 +247,7 @@ def _load_lora_and_optionally_fuse(
     track_tensor_lifecycle(f"{up_key}", original_up, "BEFORE_TRANSFER")
     
     with MemoryTracker(f"Critical tensor transfer for {down_key}"):
-        # Use pop() to remove tensor from state_dict and free CPU memory
-        w_down = state_dict.pop(down_key).to(device=device, dtype=torch.float32)
+        w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
         
         # Check if tensors share storage
         check_tensor_sharing(f"original_{down_key}", original_down, f"transferred_{down_key}", w_down)
@@ -259,8 +257,7 @@ def _load_lora_and_optionally_fuse(
         track_tensor_lifecycle(f"{down_key}_new", w_down, "AFTER_TRANSFER_NEW")
     
     with MemoryTracker(f"Critical tensor transfer for {up_key}"):
-        # Use pop() to remove tensor from state_dict and free CPU memory
-        w_up = state_dict.pop(up_key).to(device=device, dtype=torch.float32)
+        w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
         
         # Check if tensors share storage
         check_tensor_sharing(f"original_{up_key}", original_up, f"transferred_{up_key}", w_up)

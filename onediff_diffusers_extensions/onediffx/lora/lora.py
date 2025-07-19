@@ -109,6 +109,11 @@ def load_lora_and_optionally_fuse(
             "onediffx.lora only supports diffusers of at least version 0.19.3"
         )
 
+    # Default device to cuda if not specified
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.debug(f"[OneDiffX] No device specified, defaulting to: {device}")
+
     _init_adapters_info(pipeline)
 
     if lora_scale is None:
@@ -408,6 +413,34 @@ def load_state_dict_cached(
             # Monitor what we retrieved from cache
             if isinstance(cached_result, tuple) and len(cached_result) >= 2:
                 track_state_dict_memory(f"Retrieved cached state_dict for {lora_name}", cached_result[0])
+                
+                # Check if we need to move tensors to the requested device
+                if device is not None:
+                    state_dict, network_alphas = cached_result[0], cached_result[1]
+                    target_device = torch.device(device) if isinstance(device, str) else device
+                    
+                    # Check if any tensors are on the wrong device
+                    needs_device_transfer = False
+                    for key, tensor in state_dict.items():
+                        if torch.is_tensor(tensor) and tensor.device != target_device:
+                            needs_device_transfer = True
+                            break
+                    
+                    if needs_device_transfer:
+                        logger.info(f"[OneDiffX Cached LoRA] Moving cached tensors from {tensor.device} to {target_device}")
+                        # Create new state dict with tensors on correct device
+                        new_state_dict = {}
+                        with MemoryTracker(f"Moving cached tensors to {target_device}"):
+                            for key, value in state_dict.items():
+                                if torch.is_tensor(value):
+                                    new_state_dict[key] = value.to(target_device)
+                                else:
+                                    new_state_dict[key] = value
+                        
+                        # Update cache with tensors on correct device
+                        CachedLoRAs[lora_name] = (new_state_dict, network_alphas)
+                        return new_state_dict, network_alphas
+                
         return cached_result
 
     # Pass device parameter to diffusers if specified
@@ -431,6 +464,13 @@ def load_state_dict_cached(
 
 
 CachedLoRAs = LRUCacheDict(100)
+
+
+def clear_lora_cache():
+    """Clear the cached LoRA state dicts to free memory."""
+    global CachedLoRAs
+    CachedLoRAs.clear()
+    logger.info("[OneDiffX] Cleared LoRA cache")
 
 
 def create_adapter_names(pipe):
