@@ -118,6 +118,7 @@ def _convert_unet_lora_key(key: str) -> str:
     
     # Check for downsampler pattern first (before splitting)
     # Downsamplers are at input_blocks.3.0.op, input_blocks.6.0.op, input_blocks.9.0.op
+    is_downsampler = False
     for i, block_num in enumerate([3, 6, 9]):
         if diffusers_name.startswith(f"input_blocks_{block_num}_0_op"):
             # This is a downsampler
@@ -125,11 +126,11 @@ def _convert_unet_lora_key(key: str) -> str:
             # Get the suffix after "op"
             suffix = diffusers_name[len(f"input_blocks_{block_num}_0_op"):]
             diffusers_name = new_prefix + suffix
-            # Skip further processing for input_blocks
+            is_downsampler = True
             break
     
     # Handle input_blocks_X_Y pattern (if not already handled as downsampler)
-    elif diffusers_name.startswith("input_blocks_"):
+    if not is_downsampler and diffusers_name.startswith("input_blocks_"):
         parts = diffusers_name.split("_")
         if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
             input_block_num = int(parts[2])
