@@ -228,8 +228,8 @@ def _load_lora_and_optionally_fuse(
     down_key = prefix + ".down.weight"
     up_key = prefix + ".up.weight"
 
-    w_down = state_dict[down_key].float().to(device)
-    w_up = state_dict[up_key].float().to(device)
+    w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
+    w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
 
     adapter_name = adapter_name if adapter_name is not None else get_adapter_names(self)
 
@@ -242,8 +242,9 @@ def _load_lora_and_optionally_fuse(
     self.scaling[adapter_name] = lora_scale * alpha / rank
     self.r[adapter_name] = rank
     self.lora_alpha[adapter_name] = alpha
-    self.lora_A[adapter_name] = offload_tensor(w_down, offload_device)
-    self.lora_B[adapter_name] = offload_tensor(w_up, offload_device)
+    # Store the tensors directly without unnecessary offloading
+    self.lora_A[adapter_name] = w_down
+    self.lora_B[adapter_name] = w_up
     self.adapter_names.add(adapter_name)
 
     if fuse:
