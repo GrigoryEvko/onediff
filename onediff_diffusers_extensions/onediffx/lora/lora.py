@@ -163,6 +163,10 @@ def load_lora_and_optionally_fuse(
             )
         
         with MemoryTracker("Main LoRA state dict loading from diffusers"):
+            print(f"[DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
+            import inspect
+            sig = inspect.signature(LoraLoaderMixin.lora_state_dict)
+            print(f"[DEBUG] lora_state_dict signature: {sig}")
             state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
                 pretrained_model_name_or_path_or_dict,
                 unet_config=self.unet.config,
