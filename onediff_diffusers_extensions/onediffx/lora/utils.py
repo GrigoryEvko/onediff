@@ -27,7 +27,6 @@ from .memory_monitor import (
     track_tensor_lifecycle,
     track_dict_memory,
     check_tensor_sharing,
-    monitored_gc_collect,
     _timestamp,
 )
 
@@ -307,9 +306,6 @@ def _load_lora_and_optionally_fuse(
         
         # Track if state dict was cleaned up
         print(f"{_timestamp()} [CLEANUP_CHECK] State dict now has {len(state_dict)} tensors after transfer (should be 0)")
-        
-        # Force garbage collection to free CPU memory immediately
-        monitored_gc_collect(f"After transferring {adapter_name} tensors")
         
     self.adapter_names.add(adapter_name)
 

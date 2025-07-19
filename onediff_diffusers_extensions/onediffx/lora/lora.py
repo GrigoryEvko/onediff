@@ -30,7 +30,6 @@ from .memory_monitor import (
     memory_checkpoint,
     track_state_dict_memory,
     track_dict_memory,
-    monitored_gc_collect,
     _timestamp,
 )
 
@@ -259,7 +258,6 @@ def load_lora_and_optionally_fuse(
             print(f"{_timestamp()} [CLEANUP] Clearing {len(remaining_keys)} remaining keys from state_dict")
             print(f"{_timestamp()} [CLEANUP] Remaining keys: {remaining_keys[:5]}{'...' if len(remaining_keys) > 5 else ''}")
             state_dict.clear()
-            monitored_gc_collect("After clearing final state_dict")
 
 
 @deprecated()
