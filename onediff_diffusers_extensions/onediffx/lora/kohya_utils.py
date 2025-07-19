@@ -114,10 +114,22 @@ def _convert_unet_lora_key(key: str) -> str:
     # Based on Kohya scripts source code:
     # input_blocks.{3*i + j + 1}.0 → down_blocks.{i}.resnets.{j}
     # input_blocks.{3*i + j + 1}.1 → down_blocks.{i}.attentions.{j}
-    # input_blocks.{3*(i+1)}.0 → down_blocks.{i}.downsamplers.0
+    # input_blocks.{3*(i+1)}.0.op → down_blocks.{i}.downsamplers.0.conv
     
-    # Handle input_blocks_X_Y pattern
-    if diffusers_name.startswith("input_blocks_"):
+    # Check for downsampler pattern first (before splitting)
+    # Downsamplers are at input_blocks.3.0.op, input_blocks.6.0.op, input_blocks.9.0.op
+    for i, block_num in enumerate([3, 6, 9]):
+        if diffusers_name.startswith(f"input_blocks_{block_num}_0_op"):
+            # This is a downsampler
+            new_prefix = f"down_blocks.{i}.downsamplers.0.conv"
+            # Get the suffix after "op"
+            suffix = diffusers_name[len(f"input_blocks_{block_num}_0_op"):]
+            diffusers_name = new_prefix + suffix
+            # Skip further processing for input_blocks
+            break
+    
+    # Handle input_blocks_X_Y pattern (if not already handled as downsampler)
+    elif diffusers_name.startswith("input_blocks_"):
         parts = diffusers_name.split("_")
         if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
             input_block_num = int(parts[2])
@@ -127,30 +139,21 @@ def _convert_unet_lora_key(key: str) -> str:
             if input_block_num == 0 and inner_block_type == 0:
                 new_prefix = "conv_in"
             else:
-                # Check if it's a downsampler block (occurs at 3, 6, 9 with inner_block_type 0 and op suffix)
-                if input_block_num % 3 == 0 and inner_block_type == 0 and len(parts) > 4 and parts[4].startswith("op"):
-                    block_id = (input_block_num // 3) - 1
-                    new_prefix = f"down_blocks.{block_id}.downsamplers.0"
+                # Regular blocks: compute block_id and layer_in_block
+                # Formula: input_blocks.{3*i + j + 1} where i is block, j is layer
+                block_id = (input_block_num - 1) // 3
+                layer_in_block = (input_block_num - 1) % 3
+                
+                if inner_block_type == 0:
+                    new_prefix = f"down_blocks.{block_id}.resnets.{layer_in_block}"
+                elif inner_block_type == 1:
+                    new_prefix = f"down_blocks.{block_id}.attentions.{layer_in_block}"
                 else:
-                    # Regular blocks: compute block_id and layer_in_block
-                    # Formula: input_blocks.{3*i + j + 1} where i is block, j is layer
-                    block_id = (input_block_num - 1) // 3
-                    layer_in_block = (input_block_num - 1) % 3
-                    
-                    if inner_block_type == 0:
-                        new_prefix = f"down_blocks.{block_id}.resnets.{layer_in_block}"
-                    elif inner_block_type == 1:
-                        new_prefix = f"down_blocks.{block_id}.attentions.{layer_in_block}"
-                    else:
-                        # Fallback
-                        new_prefix = f"down_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
+                    # Fallback
+                    new_prefix = f"down_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
             
             # Replace the prefix and reconstruct
-            # For downsamplers, skip the "op" part and add "conv" directly
-            if "downsamplers" in new_prefix and len(parts) > 4 and parts[4].startswith("op"):
-                diffusers_name = new_prefix + ".conv." + "_".join(parts[5:])
-            else:
-                diffusers_name = new_prefix + "." + "_".join(parts[4:])
+            diffusers_name = new_prefix + "." + "_".join(parts[4:])
     
     # Handle output_blocks_X_Y pattern
     elif diffusers_name.startswith("output_blocks_"):
