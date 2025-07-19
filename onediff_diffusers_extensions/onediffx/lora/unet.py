@@ -28,7 +28,7 @@ def load_lora_into_unet(
     *,
     fuse: bool = False,
     lora_scale: float = 1.0,
-    offload_device="cpu",
+    offload_device="cuda",
     use_cache=False,
 ):
     keys = list(state_dict.keys())
@@ -128,7 +128,7 @@ def _load_attn_procs(
 ):
 
     lora_scale = kwargs.pop("lora_scale", 1.0)
-    offload_device = kwargs.pop("offload_device", "cpu")
+    offload_device = kwargs.pop("offload_device", "cuda")
     use_cache = kwargs.pop("use_cache", False)
     _pipeline = kwargs.pop("_pipeline", None)
     network_alphas = kwargs.pop("network_alphas", None)

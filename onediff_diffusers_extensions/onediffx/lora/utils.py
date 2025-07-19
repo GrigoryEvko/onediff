@@ -101,7 +101,7 @@ def get_delta_weight(
 def offload_tensor(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
     cur_device = tensor.device
     if cur_device == device:
-        return tensor.clone()
+        return tensor  # Don't clone if already on target device
     else:
         return tensor.to(device)
 
@@ -181,7 +181,7 @@ def _load_lora_and_optionally_fuse(
     adapter_name: Optional[str] = None,
     fuse: bool = True,
     prefix: str = "lora",
-    offload_device: str = "cpu",
+    offload_device: str = "cuda",
 ) -> None:
     r"""
     This will fuse the LoRA weights in `state_dict` into Linear or Conv2d module.
