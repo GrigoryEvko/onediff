@@ -20,7 +20,11 @@ if version.parse(diffusers.__version__) <= version.parse("0.20.0"):
 else:
     from diffusers.models.lora import PatchedLoraProjection
 
-
+from .memory_monitor import (
+    MemoryTracker,
+    memory_checkpoint,
+    track_tensor_memory,
+)
 
 _adapter_layer_names = ()
 
@@ -228,8 +232,18 @@ def _load_lora_and_optionally_fuse(
     down_key = prefix + ".down.weight"
     up_key = prefix + ".up.weight"
 
-    w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
-    w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
+    # Track tensor loading and device transfers
+    track_tensor_memory(f"Original {down_key}", state_dict[down_key])
+    track_tensor_memory(f"Original {up_key}", state_dict[up_key])
+    
+    with MemoryTracker(f"Tensor device transfer for {down_key}"):
+        w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
+    
+    with MemoryTracker(f"Tensor device transfer for {up_key}"):
+        w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
+    
+    track_tensor_memory(f"Transferred {down_key}", w_down)
+    track_tensor_memory(f"Transferred {up_key}", w_up)
 
     adapter_name = adapter_name if adapter_name is not None else get_adapter_names(self)
 
@@ -242,9 +256,11 @@ def _load_lora_and_optionally_fuse(
     self.scaling[adapter_name] = lora_scale * alpha / rank
     self.r[adapter_name] = rank
     self.lora_alpha[adapter_name] = alpha
+    
     # Store the tensors directly without unnecessary offloading
-    self.lora_A[adapter_name] = w_down
-    self.lora_B[adapter_name] = w_up
+    with MemoryTracker(f"LoRA tensor storage for {adapter_name}"):
+        self.lora_A[adapter_name] = w_down
+        self.lora_B[adapter_name] = w_up
     self.adapter_names.add(adapter_name)
 
     if fuse:
@@ -258,9 +274,15 @@ def _load_lora_and_optionally_fuse(
                 "Otherwise, it may lead to accuracy issues, impacting the quality of the generated images."
             )
         self.active_adapter_names[adapter_name] = lora_scale
-        lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
-        fused_weight = self.weight.data.float() + lora_weight
-        self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
+        
+        with MemoryTracker(f"LoRA weight fusion for {adapter_name}"):
+            lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
+            track_tensor_memory(f"LoRA delta weight for {adapter_name}", lora_weight)
+            
+            fused_weight = self.weight.data.float() + lora_weight
+            track_tensor_memory(f"Fused weight for {adapter_name}", fused_weight)
+            
+            self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
 
 
 def _unfuse_lora(

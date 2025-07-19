@@ -25,6 +25,11 @@ from .utils import (
     _unfuse_lora,
     is_peft_available,
 )
+from .memory_monitor import (
+    MemoryTracker,
+    memory_checkpoint,
+    track_state_dict_memory,
+)
 
 if is_peft_available():
     import peft
@@ -138,12 +143,13 @@ def load_lora_and_optionally_fuse(
     self = pipeline
 
     if use_cache:
-        state_dict, network_alphas = load_state_dict_cached(
-            pretrained_model_name_or_path_or_dict,
-            device=device,
-            unet_config=self.unet.config,
-            **kwargs,
-        )
+        with MemoryTracker("Cached LoRA state dict loading"):
+            state_dict, network_alphas = load_state_dict_cached(
+                pretrained_model_name_or_path_or_dict,
+                device=device,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
     else:
         # Pass device parameter to diffusers if specified
         if device is not None:
@@ -155,11 +161,14 @@ def load_lora_and_optionally_fuse(
             LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
                 _maybe_map_sgm_blocks_to_diffusers
             )
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-            pretrained_model_name_or_path_or_dict,
-            unet_config=self.unet.config,
-            **kwargs,
-        )
+        
+        with MemoryTracker("Main LoRA state dict loading from diffusers"):
+            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+                pretrained_model_name_or_path_or_dict,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
+        
         if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
             LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
 
@@ -167,51 +176,63 @@ def load_lora_and_optionally_fuse(
     if not is_correct_format:
         raise ValueError("[OneDiffX load_and_fuse_lora] Invalid LoRA checkpoint.")
 
+    # Track the loaded state dict
+    track_state_dict_memory("Main loaded state_dict", state_dict)
+
     # load lora into unet
-    load_lora_into_unet(
-        self,
-        state_dict,
-        network_alphas,
-        self.unet,
-        adapter_name=adapter_name,
-        lora_scale=lora_scale,
-        offload_device=offload_device,
-        use_cache=use_cache,
-        fuse=fuse,
-    )
+    with MemoryTracker("UNet LoRA loading"):
+        load_lora_into_unet(
+            self,
+            state_dict,
+            network_alphas,
+            self.unet,
+            adapter_name=adapter_name,
+            lora_scale=lora_scale,
+            offload_device=offload_device,
+            use_cache=use_cache,
+            fuse=fuse,
+        )
 
     # load lora weights into text encoder
-    text_encoder_state_dict = {
-        k: v for k, v in state_dict.items() if "text_encoder." in k
-    }
+    with MemoryTracker("Text encoder state dict filtering"):
+        text_encoder_state_dict = {
+            k: v for k, v in state_dict.items() if "text_encoder." in k
+        }
+    
     if len(text_encoder_state_dict) > 0:
-        load_lora_into_text_encoder(
-            self,
-            text_encoder_state_dict,
-            network_alphas=network_alphas,
-            text_encoder=self.text_encoder,
-            prefix="text_encoder",
-            lora_scale=lora_scale,
-            adapter_name=adapter_name,
-            _pipeline=self,
-            fuse=fuse,
-        )
+        track_state_dict_memory("Text encoder filtered state_dict", text_encoder_state_dict)
+        with MemoryTracker("Text encoder LoRA loading"):
+            load_lora_into_text_encoder(
+                self,
+                text_encoder_state_dict,
+                network_alphas=network_alphas,
+                text_encoder=self.text_encoder,
+                prefix="text_encoder",
+                lora_scale=lora_scale,
+                adapter_name=adapter_name,
+                _pipeline=self,
+                fuse=fuse,
+            )
 
-    text_encoder_2_state_dict = {
-        k: v for k, v in state_dict.items() if "text_encoder_2." in k
-    }
+    with MemoryTracker("Text encoder 2 state dict filtering"):
+        text_encoder_2_state_dict = {
+            k: v for k, v in state_dict.items() if "text_encoder_2." in k
+        }
+    
     if len(text_encoder_2_state_dict) > 0 and hasattr(self, "text_encoder_2"):
-        load_lora_into_text_encoder(
-            self,
-            text_encoder_2_state_dict,
-            network_alphas=network_alphas,
-            text_encoder=self.text_encoder_2,
-            prefix="text_encoder_2",
-            lora_scale=lora_scale,
-            adapter_name=adapter_name,
-            _pipeline=self,
-            fuse=fuse,
-        )
+        track_state_dict_memory("Text encoder 2 filtered state_dict", text_encoder_2_state_dict)
+        with MemoryTracker("Text encoder 2 LoRA loading"):
+            load_lora_into_text_encoder(
+                self,
+                text_encoder_2_state_dict,
+                network_alphas=network_alphas,
+                text_encoder=self.text_encoder_2,
+                prefix="text_encoder_2",
+                lora_scale=lora_scale,
+                adapter_name=adapter_name,
+                _pipeline=self,
+                fuse=fuse,
+            )
 
 
 @deprecated()
@@ -345,7 +366,8 @@ def load_state_dict_cached(
 ) -> Tuple[Dict, Dict]:
     assert isinstance(lora, (str, Path, dict))
     if isinstance(lora, dict):
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(lora, **kwargs)
+        with MemoryTracker("Cached LoRA from dict"):
+            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(lora, **kwargs)
         return state_dict, network_alphas
 
     global CachedLoRAs
@@ -356,17 +378,23 @@ def load_state_dict_cached(
         logger.debug(
             f"[OneDiffX Cached LoRA] get cached lora of name: {str(lora_name)}"
         )
-        return CachedLoRAs[lora_name]
+        with MemoryTracker("Cached LoRA retrieval"):
+            cached_result = CachedLoRAs[lora_name]
+        return cached_result
 
     # Pass device parameter to diffusers if specified
     if device is not None:
         kwargs['device'] = device
         
-    state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-        lora,
-        **kwargs,
-    )
-    CachedLoRAs[lora_name] = (state_dict, network_alphas)
+    with MemoryTracker("Cached LoRA initial loading from diffusers"):
+        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+            lora,
+            **kwargs,
+        )
+    
+    with MemoryTracker("Cached LoRA storage"):
+        CachedLoRAs[lora_name] = (state_dict, network_alphas)
+    
     logger.debug(f"[OneDiffX Cached LoRA] create cached lora of name: {str(lora_name)}")
     return state_dict, network_alphas
 

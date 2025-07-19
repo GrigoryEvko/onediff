@@ -8,6 +8,7 @@ from diffusers.utils import is_accelerate_available
 from onediff.utils import logger
 
 from .utils import _load_lora_and_optionally_fuse, is_peft_available
+from .memory_monitor import MemoryTracker, track_state_dict_memory
 
 if is_peft_available():
     import peft
@@ -42,11 +43,13 @@ def load_lora_into_unet(
         logger.info(f"Loading {cls.unet_name}.")
 
         unet_keys = [k for k in keys if k.startswith(cls.unet_name)]
-        state_dict = {
-            k.replace(f"{cls.unet_name}.", ""): v
-            for k, v in state_dict.items()
-            if k in unet_keys
-        }
+        with MemoryTracker("UNet state dict key filtering"):
+            state_dict = {
+                k.replace(f"{cls.unet_name}.", ""): v
+                for k, v in state_dict.items()
+                if k in unet_keys
+            }
+        track_state_dict_memory("UNet filtered state_dict", state_dict)
 
         if network_alphas is not None:
             alpha_keys = [
@@ -65,18 +68,19 @@ def load_lora_into_unet(
         logger.warning(warn_message)
 
     # unet.load_attn
-    _load_attn_procs(
-        unet,
-        state_dict,
-        network_alphas=network_alphas,
-        low_cpu_mem_usage=low_cpu_mem_usage,
-        adapter_name=adapter_name,
-        _pipeline=_pipeline,
-        lora_scale=lora_scale,
-        offload_device=offload_device,
-        use_cache=use_cache,
-        fuse=fuse,
-    )
+    with MemoryTracker("UNet attention processors loading"):
+        _load_attn_procs(
+            unet,
+            state_dict,
+            network_alphas=network_alphas,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            adapter_name=adapter_name,
+            _pipeline=_pipeline,
+            lora_scale=lora_scale,
+            offload_device=offload_device,
+            use_cache=use_cache,
+            fuse=fuse,
+        )
 
 
 # The code is referenced from https://github.com/huggingface/diffusers/blob/ce9825b56bd8a6849e68b9590022e935400659e6/src/diffusers/loaders/unet.py#L383
@@ -145,14 +149,16 @@ def _load_attn_procs(
 
     if is_lora:
         # correct keys
-        if hasattr(self, "convert_state_dict_legacy_attn_format"):
-            state_dict, network_alphas = self.convert_state_dict_legacy_attn_format(
-                state_dict, network_alphas
-            )
-        else:
-            state_dict, network_alphas = _convert_state_dict_legacy_attn_format(
-                self, state_dict, network_alphas
-            )
+        with MemoryTracker("State dict format conversion"):
+            if hasattr(self, "convert_state_dict_legacy_attn_format"):
+                state_dict, network_alphas = self.convert_state_dict_legacy_attn_format(
+                    state_dict, network_alphas
+                )
+            else:
+                state_dict, network_alphas = _convert_state_dict_legacy_attn_format(
+                    self, state_dict, network_alphas
+                )
+        track_state_dict_memory("Converted state_dict", state_dict)
 
         if network_alphas is not None:
             network_alphas_keys = list(network_alphas.keys())

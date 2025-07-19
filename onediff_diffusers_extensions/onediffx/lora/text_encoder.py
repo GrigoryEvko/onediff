@@ -23,6 +23,7 @@ from diffusers.utils import is_accelerate_available
 from onediff.utils import logger
 
 from .utils import _load_lora_and_optionally_fuse
+from .memory_monitor import MemoryTracker, track_state_dict_memory
 
 USE_PEFT_BACKEND = False
 
@@ -88,18 +89,22 @@ def load_lora_into_text_encoder(
         text_encoder_keys = [
             k for k in keys if k.startswith(prefix) and k.split(".")[0] == prefix
         ]
-        text_encoder_lora_state_dict = {
-            k.replace(f"{prefix}.", ""): v
-            for k, v in state_dict.items()
-            if k in text_encoder_keys
-        }
+        with MemoryTracker(f"Text encoder state dict filtering for {prefix}"):
+            text_encoder_lora_state_dict = {
+                k.replace(f"{prefix}.", ""): v
+                for k, v in state_dict.items()
+                if k in text_encoder_keys
+            }
 
         if len(text_encoder_lora_state_dict) > 0:
             logger.info(f"Loading {prefix}.")
+            track_state_dict_memory(f"Text encoder {prefix} filtered state_dict", text_encoder_lora_state_dict)
+            
             rank = {}
-            text_encoder_lora_state_dict = convert_state_dict_to_diffusers(
-                text_encoder_lora_state_dict
-            )
+            with MemoryTracker(f"Text encoder state dict conversion for {prefix}"):
+                text_encoder_lora_state_dict = convert_state_dict_to_diffusers(
+                    text_encoder_lora_state_dict
+                )
 
             if USE_PEFT_BACKEND:
                 # convert state dict
