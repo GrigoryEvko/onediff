@@ -42,7 +42,6 @@ def load_lora_into_text_encoder(
     adapter_name=None,
     _pipeline=None,
     fuse: bool = False,
-    memory_efficient: bool = True,
 ):
     """
     This will load and fuse the LoRA layers specified in `state_dict` into `text_encoder`
@@ -232,7 +231,6 @@ def load_lora_into_text_encoder(
                         adapter_name=adapter_name,
                         prefix="lora_linear_layer",
                         fuse=fuse,
-                        memory_efficient=memory_efficient,
                     )
                     _load_lora_and_optionally_fuse(
                         attn_module.k_proj,
@@ -243,7 +241,6 @@ def load_lora_into_text_encoder(
                         adapter_name=adapter_name,
                         prefix="lora_linear_layer",
                         fuse=fuse,
-                        memory_efficient=memory_efficient,
                     )
                     _load_lora_and_optionally_fuse(
                         attn_module.v_proj,
@@ -254,7 +251,6 @@ def load_lora_into_text_encoder(
                         adapter_name=adapter_name,
                         prefix="lora_linear_layer",
                         fuse=fuse,
-                        memory_efficient=memory_efficient,
                     )
                     _load_lora_and_optionally_fuse(
                         attn_module.out_proj,
@@ -265,7 +261,6 @@ def load_lora_into_text_encoder(
                         adapter_name=adapter_name,
                         prefix="lora_linear_layer",
                         fuse=fuse,
-                        memory_efficient=memory_efficient,
                     )
 
                 if patch_mlp:
@@ -293,7 +288,6 @@ def load_lora_into_text_encoder(
                             adapter_name=adapter_name,
                             prefix="lora_linear_layer",
                             fuse=fuse,
-                            memory_efficient=memory_efficient,
                         )
                         _load_lora_and_optionally_fuse(
                             mlp_module.fc2,
@@ -304,7 +298,6 @@ def load_lora_into_text_encoder(
                             adapter_name=adapter_name,
                             prefix="lora_linear_layer",
                             fuse=fuse,
-                            memory_efficient=memory_efficient,
                         )
 
                 if is_network_alphas_populated and len(network_alphas) > 0:

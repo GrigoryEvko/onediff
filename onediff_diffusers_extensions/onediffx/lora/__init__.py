@@ -1,5 +1,4 @@
 from .lora import (
-    clear_lora_cache,
     delete_adapters,
     get_active_adapters,
     load_and_fuse_lora,
@@ -9,7 +8,6 @@ from .lora import (
 )
 
 __all__ = [
-    "clear_lora_cache",
     "delete_adapters",
     "get_active_adapters",
     "load_and_fuse_lora",

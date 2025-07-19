@@ -30,7 +30,6 @@ def load_lora_into_unet(
     lora_scale: float = 1.0,
     offload_device="cpu",
     use_cache=False,
-    memory_efficient=True,
 ):
     keys = list(state_dict.keys())
     cls = type(self)
@@ -77,7 +76,6 @@ def load_lora_into_unet(
         offload_device=offload_device,
         use_cache=use_cache,
         fuse=fuse,
-        memory_efficient=memory_efficient,
     )
 
 
@@ -136,7 +134,6 @@ def _load_attn_procs(
     network_alphas = kwargs.pop("network_alphas", None)
     adapter_name = kwargs.pop("adapter_name", None)
     fuse = kwargs.pop("fuse", False)
-    memory_efficient = kwargs.pop("memory_efficient", True)
     state_dict = pretrained_model_name_or_path_or_dict
 
     is_network_alphas_none = network_alphas is None
@@ -167,20 +164,9 @@ def _load_attn_procs(
         all_keys = list(state_dict.keys())
         for key in all_keys:
             value = state_dict.pop(key)
-            
-            # Handle old LoRA format with only 3 parts (e.g., "lora.down.weight")
-            key_parts = key.split(".")
-            if len(key_parts) <= 3:
-                # Old format detected - skip this key as it's not compatible
-                logger.warning(
-                    f"[OneDiffX _load_attn_procs] Skipping key '{key}' - appears to be old LoRA format. "
-                    "Please convert your LoRA to the new format using the diffusers library."
-                )
-                continue
-            
             attn_processor_key, sub_key = (
-                ".".join(key_parts[:-3]),
-                ".".join(key_parts[-3:]),
+                ".".join(key.split(".")[:-3]),
+                ".".join(key.split(".")[-3:]),
             )
             lora_grouped_dict[attn_processor_key][sub_key] = value
 
@@ -205,14 +191,6 @@ def _load_attn_procs(
             )
 
         for key, value_dict in lora_grouped_dict.items():
-            # Skip empty keys which might happen with incompatible formats
-            if not key:
-                logger.warning(
-                    "[OneDiffX _load_attn_procs] Skipping empty processor key - "
-                    "this usually indicates an incompatible LoRA format."
-                )
-                continue
-                
             attn_processor = self
             for sub_key in key.split("."):
                 attn_processor = getattr(attn_processor, sub_key)
@@ -239,7 +217,6 @@ def _load_attn_procs(
                     offload_device=offload_device,
                     adapter_name=adapter_name,
                     fuse=fuse,
-                    memory_efficient=memory_efficient,
                 )
             elif is_peft_available() and isinstance(
                 attn_processor,
@@ -254,7 +231,6 @@ def _load_attn_procs(
                     offload_device=offload_device,
                     adapter_name=adapter_name,
                     fuse=fuse,
-                    memory_efficient=memory_efficient,
                 )
             else:
                 raise ValueError(
