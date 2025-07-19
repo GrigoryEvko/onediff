@@ -28,6 +28,7 @@ from .memory_monitor import (
     track_dict_memory,
     check_tensor_sharing,
     monitored_gc_collect,
+    _timestamp,
 )
 
 _adapter_layer_names = ()
@@ -268,6 +269,16 @@ def _load_lora_and_optionally_fuse(
     
     track_tensor_memory(f"Transferred {down_key}", w_down)
     track_tensor_memory(f"Transferred {up_key}", w_up)
+    
+    # Delete tensors from state dict to free CPU memory
+    del state_dict[down_key]
+    del state_dict[up_key]
+    # Force deletion of original references
+    del original_down
+    del original_up
+    
+    # Track cleanup
+    print(f"{_timestamp()} [CLEANUP] Deleted {down_key} and {up_key} from state_dict, remaining keys: {len(state_dict)}")
 
     adapter_name = adapter_name if adapter_name is not None else get_adapter_names(self)
 
@@ -295,7 +306,7 @@ def _load_lora_and_optionally_fuse(
         track_dict_memory(f"self.lora_B after {adapter_name}", self.lora_B)
         
         # Track if state dict was cleaned up
-        print(f"[CLEANUP_CHECK] State dict now has {len(state_dict)} tensors after transfer (should be 0)")
+        print(f"{_timestamp()} [CLEANUP_CHECK] State dict now has {len(state_dict)} tensors after transfer (should be 0)")
         
         # Force garbage collection to free CPU memory immediately
         monitored_gc_collect(f"After transferring {adapter_name} tensors")

@@ -6,9 +6,17 @@ Used to identify sources of unexpected CPU memory allocations.
 import functools
 import gc
 import sys
+import time
 import torch
 import psutil
 from typing import Tuple, Optional, Any, Callable, Dict
+
+# Global start time for consistent timestamps
+_start_time = time.time()
+
+def _timestamp():
+    """Return milliseconds since monitoring started"""
+    return f"[{int((time.time() - _start_time) * 1000):>6}ms]"
 
 
 def get_memory_stats() -> Tuple[float, float, float]:
@@ -37,10 +45,10 @@ def print_memory_delta(operation_name: str, before: Tuple[float, float, float], 
     
     # Only print if there's a significant change (> threshold)
     if abs(cpu_delta) > threshold_mb or abs(gpu_delta) > threshold_mb:
-        print(f"[MEMORY] {operation_name}:")
-        print(f"  CPU: {before[0]:.1f}MB -> {after[0]:.1f}MB (Δ {cpu_delta:+.1f}MB)")
-        print(f"  GPU: {before[1]:.1f}MB -> {after[1]:.1f}MB (Δ {gpu_delta:+.1f}MB)")
-        print(f"  GPU Reserved: {before[2]:.1f}MB -> {after[2]:.1f}MB (Δ {gpu_reserved_delta:+.1f}MB)")
+        print(f"{_timestamp()} [MEMORY] {operation_name}:")
+        print(f"{_timestamp()}   CPU: {before[0]:.1f}MB -> {after[0]:.1f}MB (Δ {cpu_delta:+.1f}MB)")
+        print(f"{_timestamp()}   GPU: {before[1]:.1f}MB -> {after[1]:.1f}MB (Δ {gpu_delta:+.1f}MB)")
+        print(f"{_timestamp()}   GPU Reserved: {before[2]:.1f}MB -> {after[2]:.1f}MB (Δ {gpu_reserved_delta:+.1f}MB)")
 
 
 def memory_checkpoint(operation_name: str, threshold_mb: float = 1.0):
@@ -122,11 +130,11 @@ def track_tensor_memory(tensor_name: str, tensor: torch.Tensor):
             size_mb = tensor.element_size() * tensor.numel() / 1024 / 1024
             device = tensor.device if hasattr(tensor, 'device') else 'unknown'
             shape = tuple(tensor.shape) if hasattr(tensor, 'shape') else 'unknown'
-            print(f"[TENSOR] {tensor_name}: {size_mb:.1f}MB on {device} (shape: {shape})")
+            print(f"{_timestamp()} [TENSOR] {tensor_name}: {size_mb:.1f}MB on {device} (shape: {shape})")
         else:
-            print(f"[TENSOR] {tensor_name}: Not a tensor or missing attributes")
+            print(f"{_timestamp()} [TENSOR] {tensor_name}: Not a tensor or missing attributes")
     except Exception as e:
-        print(f"[TENSOR] {tensor_name}: Error tracking tensor - {e}")
+        print(f"{_timestamp()} [TENSOR] {tensor_name}: Error tracking tensor - {e}")
 
 
 def track_state_dict_memory(state_dict_name: str, state_dict: dict):
@@ -145,9 +153,9 @@ def track_state_dict_memory(state_dict_name: str, state_dict: dict):
                 # Skip items that aren't tensors or have issues
                 continue
         
-        print(f"[STATE_DICT] {state_dict_name}: {total_size_mb:.1f}MB total, {tensor_count} tensors")
+        print(f"{_timestamp()} [STATE_DICT] {state_dict_name}: {total_size_mb:.1f}MB total, {tensor_count} tensors")
     except Exception as e:
-        print(f"[STATE_DICT] {state_dict_name}: Error tracking state dict - {e}")
+        print(f"{_timestamp()} [STATE_DICT] {state_dict_name}: Error tracking state dict - {e}")
 
 
 def get_pytorch_memory_stats() -> Dict[str, int]:
@@ -185,23 +193,23 @@ def track_tensor_lifecycle(tensor_name: str, tensor: torch.Tensor, operation: st
     """Track tensor through its lifecycle with reference counting and data pointer"""
     try:
         if not isinstance(tensor, torch.Tensor):
-            print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}: Not a tensor")
+            print(f"{_timestamp()} [TENSOR_LIFECYCLE] {operation} - {tensor_name}: Not a tensor")
             return
             
         ref_count = sys.getrefcount(tensor) - 1  # Subtract 1 for the function argument
         data_ptr = tensor.data_ptr() if hasattr(tensor, 'data_ptr') else 'N/A'
         size_mb = tensor.element_size() * tensor.numel() / 1024 / 1024
         
-        print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}:")
-        print(f"  refs={ref_count}, ptr={data_ptr}, device={tensor.device}")
-        print(f"  shape={tuple(tensor.shape)}, dtype={tensor.dtype}, size={size_mb:.1f}MB")
+        print(f"{_timestamp()} [TENSOR_LIFECYCLE] {operation} - {tensor_name}:")
+        print(f"{_timestamp()}   refs={ref_count}, ptr={data_ptr}, device={tensor.device}")
+        print(f"{_timestamp()}   shape={tuple(tensor.shape)}, dtype={tensor.dtype}, size={size_mb:.1f}MB")
         
         # Check if tensor storage is shared
         if hasattr(tensor, 'storage'):
             storage_ptr = tensor.storage().data_ptr() if tensor.storage() else 'N/A'
-            print(f"  storage_ptr={storage_ptr}")
+            print(f"{_timestamp()}   storage_ptr={storage_ptr}")
     except Exception as e:
-        print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}: Error - {e}")
+        print(f"{_timestamp()} [TENSOR_LIFECYCLE] {operation} - {tensor_name}: Error - {e}")
 
 
 def track_dict_memory(dict_name: str, dictionary: dict):
@@ -224,11 +232,11 @@ def track_dict_memory(dict_name: str, dictionary: dict):
                 else:
                     cpu_tensors += 1
         
-        print(f"[DICT_MEMORY] {dict_name}:")
-        print(f"  dict_overhead={total_dict_size:.1f}MB, tensors={tensor_count}")
-        print(f"  tensor_memory={tensor_memory:.1f}MB (CPU:{cpu_tensors}, GPU:{gpu_tensors})")
+        print(f"{_timestamp()} [DICT_MEMORY] {dict_name}:")
+        print(f"{_timestamp()}   dict_overhead={total_dict_size:.1f}MB, tensors={tensor_count}")
+        print(f"{_timestamp()}   tensor_memory={tensor_memory:.1f}MB (CPU:{cpu_tensors}, GPU:{gpu_tensors})")
     except Exception as e:
-        print(f"[DICT_MEMORY] {dict_name}: Error tracking dict - {e}")
+        print(f"{_timestamp()} [DICT_MEMORY] {dict_name}: Error tracking dict - {e}")
 
 
 def monitored_gc_collect(label: str = ""):
@@ -251,9 +259,9 @@ def monitored_gc_collect(label: str = ""):
         
         after = get_memory_stats()
         
-        print(f"[GC] {label}:")
-        print(f"  Collected: {total_collected} objects (gen0:{collected_0}, gen1:{collected_1}, gen2:{collected_2})")
-        print(f"  Objects: {before_objects} -> {after_objects} (Δ {after_objects - before_objects})")
+        print(f"{_timestamp()} [GC] {label}:")
+        print(f"{_timestamp()}   Collected: {total_collected} objects (gen0:{collected_0}, gen1:{collected_1}, gen2:{collected_2})")
+        print(f"{_timestamp()}   Objects: {before_objects} -> {after_objects} (Δ {after_objects - before_objects})")
         print_memory_delta("  Memory", before, after, threshold_mb=0.1)
         
         return total_collected
@@ -277,9 +285,9 @@ def check_tensor_sharing(tensor1_name: str, tensor1: torch.Tensor,
                 share_memory = tensor1.storage().data_ptr() == tensor2.storage().data_ptr()
         
         if share_storage or share_memory:
-            print(f"[TENSOR_SHARING] WARNING: {tensor1_name} and {tensor2_name} share "
+            print(f"{_timestamp()} [TENSOR_SHARING] WARNING: {tensor1_name} and {tensor2_name} share "
                   f"{'storage' if share_storage else 'memory'}!")
-            print(f"  {tensor1_name}: device={tensor1.device}, shape={tuple(tensor1.shape)}")
-            print(f"  {tensor2_name}: device={tensor2.device}, shape={tuple(tensor2.shape)}")
+            print(f"{_timestamp()}   {tensor1_name}: device={tensor1.device}, shape={tuple(tensor1.shape)}")
+            print(f"{_timestamp()}   {tensor2_name}: device={tensor2.device}, shape={tuple(tensor2.shape)}")
     except Exception as e:
-        print(f"[TENSOR_SHARING] Error checking tensor sharing - {e}")
+        print(f"{_timestamp()} [TENSOR_SHARING] Error checking tensor sharing - {e}")

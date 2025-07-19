@@ -13,6 +13,7 @@ from .memory_monitor import (
     track_state_dict_memory,
     track_dict_memory,
     memory_checkpoint,
+    _timestamp,
 )
 
 if is_peft_available():
@@ -212,7 +213,7 @@ def _load_attn_procs(
         # Monitor lora_grouped_dict before processing
         with MemoryTracker("Processing LoRA grouped dict"):
             track_dict_memory("lora_grouped_dict", lora_grouped_dict)
-            print(f"[UNET] Processing {len(lora_grouped_dict)} modules")
+            print(f"{_timestamp()} [UNET] Processing {len(lora_grouped_dict)} modules")
 
         for key, value_dict in lora_grouped_dict.items():
             memory_checkpoint(f"Processing module {key}")

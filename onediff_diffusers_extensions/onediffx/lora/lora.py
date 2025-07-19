@@ -31,6 +31,7 @@ from .memory_monitor import (
     track_state_dict_memory,
     track_dict_memory,
     monitored_gc_collect,
+    _timestamp,
 )
 
 if is_peft_available():
@@ -170,10 +171,10 @@ def load_lora_and_optionally_fuse(
             )
         
         with MemoryTracker("Main LoRA state dict loading from diffusers"):
-            print(f"[DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
+            print(f"{_timestamp()} [DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
             import inspect
             sig = inspect.signature(LoraLoaderMixin.lora_state_dict)
-            print(f"[DEBUG] lora_state_dict signature: {sig}")
+            print(f"{_timestamp()} [DEBUG] lora_state_dict signature: {sig}")
             state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
                 pretrained_model_name_or_path_or_dict,
                 unet_config=self.unet.config,
@@ -255,8 +256,8 @@ def load_lora_and_optionally_fuse(
         # Note: This is safe because we've already transferred all needed tensors
         remaining_keys = list(state_dict.keys())
         if remaining_keys:
-            print(f"[CLEANUP] Clearing {len(remaining_keys)} remaining keys from state_dict")
-            print(f"[CLEANUP] Remaining keys: {remaining_keys[:5]}{'...' if len(remaining_keys) > 5 else ''}")
+            print(f"{_timestamp()} [CLEANUP] Clearing {len(remaining_keys)} remaining keys from state_dict")
+            print(f"{_timestamp()} [CLEANUP] Remaining keys: {remaining_keys[:5]}{'...' if len(remaining_keys) > 5 else ''}")
             state_dict.clear()
             monitored_gc_collect("After clearing final state_dict")
 

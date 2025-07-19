@@ -28,6 +28,7 @@ from .memory_monitor import (
     track_state_dict_memory,
     track_dict_memory,
     memory_checkpoint,
+    _timestamp,
 )
 
 USE_PEFT_BACKEND = False
@@ -214,7 +215,7 @@ def load_lora_into_text_encoder(
                 # Monitor text encoder attention modules processing
                 with MemoryTracker("Processing text encoder attention modules"):
                     module_count = sum(1 for _ in text_encoder_attn_modules(text_encoder))
-                    print(f"[TEXT_ENCODER] Processing {module_count} attention modules")
+                    print(f"{_timestamp()} [TEXT_ENCODER] Processing {module_count} attention modules")
 
                 for name, attn_module in text_encoder_attn_modules(text_encoder):
                     memory_checkpoint(f"Processing attention module {name}")
@@ -289,7 +290,7 @@ def load_lora_into_text_encoder(
                     # Monitor text encoder MLP modules processing
                     with MemoryTracker("Processing text encoder MLP modules"):
                         mlp_module_count = sum(1 for _ in text_encoder_mlp_modules(text_encoder))
-                        print(f"[TEXT_ENCODER] Processing {mlp_module_count} MLP modules")
+                        print(f"{_timestamp()} [TEXT_ENCODER] Processing {mlp_module_count} MLP modules")
                     
                     for name, mlp_module in text_encoder_mlp_modules(text_encoder):
                         memory_checkpoint(f"Processing MLP module {name}")
