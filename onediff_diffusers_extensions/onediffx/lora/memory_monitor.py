@@ -5,9 +5,10 @@ Used to identify sources of unexpected CPU memory allocations.
 
 import functools
 import gc
+import sys
 import torch
 import psutil
-from typing import Tuple, Optional, Any, Callable
+from typing import Tuple, Optional, Any, Callable, Dict
 
 
 def get_memory_stats() -> Tuple[float, float, float]:
@@ -147,3 +148,138 @@ def track_state_dict_memory(state_dict_name: str, state_dict: dict):
         print(f"[STATE_DICT] {state_dict_name}: {total_size_mb:.1f}MB total, {tensor_count} tensors")
     except Exception as e:
         print(f"[STATE_DICT] {state_dict_name}: Error tracking state dict - {e}")
+
+
+def get_pytorch_memory_stats() -> Dict[str, int]:
+    """Get detailed PyTorch memory allocator statistics"""
+    try:
+        if torch.cuda.is_available():
+            stats = torch.cuda.memory_stats()
+            return {
+                'allocated_bytes': stats.get('allocated_bytes.all.current', 0),
+                'reserved_bytes': stats.get('reserved_bytes.all.current', 0),
+                'active_bytes': stats.get('active_bytes.all.current', 0),
+                'inactive_split_bytes': stats.get('inactive_split_bytes.all.current', 0),
+                'allocation_count': stats.get('allocation.all.current', 0),
+                'reserved_count': stats.get('reserved_bytes.all.current', 0),
+            }
+        return {}
+    except Exception as e:
+        print(f"[PYTORCH_STATS] Error getting PyTorch memory stats - {e}")
+        return {}
+
+
+def print_pytorch_memory_stats(label: str):
+    """Print detailed PyTorch memory statistics"""
+    stats = get_pytorch_memory_stats()
+    if stats:
+        print(f"[PYTORCH_STATS] {label}:")
+        print(f"  Allocated: {stats['allocated_bytes'] / 1024 / 1024:.1f}MB")
+        print(f"  Reserved: {stats['reserved_bytes'] / 1024 / 1024:.1f}MB")
+        print(f"  Active: {stats['active_bytes'] / 1024 / 1024:.1f}MB")
+        print(f"  Inactive: {stats['inactive_split_bytes'] / 1024 / 1024:.1f}MB")
+        print(f"  Allocations: {stats['allocation_count']}")
+
+
+def track_tensor_lifecycle(tensor_name: str, tensor: torch.Tensor, operation: str):
+    """Track tensor through its lifecycle with reference counting and data pointer"""
+    try:
+        if not isinstance(tensor, torch.Tensor):
+            print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}: Not a tensor")
+            return
+            
+        ref_count = sys.getrefcount(tensor) - 1  # Subtract 1 for the function argument
+        data_ptr = tensor.data_ptr() if hasattr(tensor, 'data_ptr') else 'N/A'
+        size_mb = tensor.element_size() * tensor.numel() / 1024 / 1024
+        
+        print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}:")
+        print(f"  refs={ref_count}, ptr={data_ptr}, device={tensor.device}")
+        print(f"  shape={tuple(tensor.shape)}, dtype={tensor.dtype}, size={size_mb:.1f}MB")
+        
+        # Check if tensor storage is shared
+        if hasattr(tensor, 'storage'):
+            storage_ptr = tensor.storage().data_ptr() if tensor.storage() else 'N/A'
+            print(f"  storage_ptr={storage_ptr}")
+    except Exception as e:
+        print(f"[TENSOR_LIFECYCLE] {operation} - {tensor_name}: Error - {e}")
+
+
+def track_dict_memory(dict_name: str, dictionary: dict):
+    """Track memory usage of dictionaries containing tensors"""
+    try:
+        total_dict_size = sys.getsizeof(dictionary) / 1024 / 1024
+        tensor_count = 0
+        tensor_memory = 0
+        cpu_tensors = 0
+        gpu_tensors = 0
+        
+        for key, value in dictionary.items():
+            if torch.is_tensor(value):
+                tensor_count += 1
+                size_mb = value.element_size() * value.numel() / 1024 / 1024
+                tensor_memory += size_mb
+                
+                if value.is_cuda:
+                    gpu_tensors += 1
+                else:
+                    cpu_tensors += 1
+        
+        print(f"[DICT_MEMORY] {dict_name}:")
+        print(f"  dict_overhead={total_dict_size:.1f}MB, tensors={tensor_count}")
+        print(f"  tensor_memory={tensor_memory:.1f}MB (CPU:{cpu_tensors}, GPU:{gpu_tensors})")
+    except Exception as e:
+        print(f"[DICT_MEMORY] {dict_name}: Error tracking dict - {e}")
+
+
+def monitored_gc_collect(label: str = ""):
+    """Perform garbage collection with monitoring"""
+    try:
+        before = get_memory_stats()
+        
+        # Get object count before GC
+        import gc
+        before_objects = len(gc.get_objects())
+        
+        # Run garbage collection
+        collected_0 = gc.collect(0)  # Collect young generation
+        collected_1 = gc.collect(1)  # Collect middle generation  
+        collected_2 = gc.collect(2)  # Collect old generation
+        total_collected = collected_0 + collected_1 + collected_2
+        
+        # Get object count after GC
+        after_objects = len(gc.get_objects())
+        
+        after = get_memory_stats()
+        
+        print(f"[GC] {label}:")
+        print(f"  Collected: {total_collected} objects (gen0:{collected_0}, gen1:{collected_1}, gen2:{collected_2})")
+        print(f"  Objects: {before_objects} -> {after_objects} (Δ {after_objects - before_objects})")
+        print_memory_delta("  Memory", before, after, threshold_mb=0.1)
+        
+        return total_collected
+    except Exception as e:
+        print(f"[GC] Error during garbage collection - {e}")
+        return 0
+
+
+def check_tensor_sharing(tensor1_name: str, tensor1: torch.Tensor, 
+                        tensor2_name: str, tensor2: torch.Tensor):
+    """Check if two tensors share the same storage"""
+    try:
+        if not (isinstance(tensor1, torch.Tensor) and isinstance(tensor2, torch.Tensor)):
+            return
+            
+        share_storage = tensor1.data_ptr() == tensor2.data_ptr()
+        share_memory = False
+        
+        if hasattr(tensor1, 'storage') and hasattr(tensor2, 'storage'):
+            if tensor1.storage() and tensor2.storage():
+                share_memory = tensor1.storage().data_ptr() == tensor2.storage().data_ptr()
+        
+        if share_storage or share_memory:
+            print(f"[TENSOR_SHARING] WARNING: {tensor1_name} and {tensor2_name} share "
+                  f"{'storage' if share_storage else 'memory'}!")
+            print(f"  {tensor1_name}: device={tensor1.device}, shape={tuple(tensor1.shape)}")
+            print(f"  {tensor2_name}: device={tensor2.device}, shape={tuple(tensor2.shape)}")
+    except Exception as e:
+        print(f"[TENSOR_SHARING] Error checking tensor sharing - {e}")

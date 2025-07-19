@@ -8,7 +8,12 @@ from diffusers.utils import is_accelerate_available
 from onediff.utils import logger
 
 from .utils import _load_lora_and_optionally_fuse, is_peft_available
-from .memory_monitor import MemoryTracker, track_state_dict_memory
+from .memory_monitor import (
+    MemoryTracker, 
+    track_state_dict_memory,
+    track_dict_memory,
+    memory_checkpoint,
+)
 
 if is_peft_available():
     import peft
@@ -85,6 +90,10 @@ def load_lora_into_unet(
 
 # The code is referenced from https://github.com/huggingface/diffusers/blob/ce9825b56bd8a6849e68b9590022e935400659e6/src/diffusers/loaders/unet.py#L383
 def _convert_state_dict_legacy_attn_format(self, state_dict, network_alphas):
+    # Monitor state dict before conversion
+    with MemoryTracker("State dict legacy format conversion"):
+        track_state_dict_memory("State dict before conversion", state_dict)
+    
     is_new_lora_format = all(
         key.startswith(self.unet_name) or key.startswith(self.text_encoder_name)
         for key in state_dict.keys()
@@ -122,6 +131,10 @@ def _convert_state_dict_legacy_attn_format(self, state_dict, network_alphas):
             network_alphas = {
                 format_to_lora_compatible(k): v for k, v in network_alphas.items()
             }
+    
+    # Monitor state dict after conversion
+    track_state_dict_memory("State dict after conversion", state_dict)
+    
     return state_dict, network_alphas
 
 
@@ -196,13 +209,23 @@ def _load_attn_procs(
                 f"[OneDiffX _load_attn_procs] The `state_dict` has to be empty at this point but has the following keys \n\n {', '.join(state_dict.keys())}"
             )
 
+        # Monitor lora_grouped_dict before processing
+        with MemoryTracker("Processing LoRA grouped dict"):
+            track_dict_memory("lora_grouped_dict", lora_grouped_dict)
+            print(f"[UNET] Processing {len(lora_grouped_dict)} modules")
+
         for key, value_dict in lora_grouped_dict.items():
-            attn_processor = self
-            for sub_key in key.split("."):
-                attn_processor = getattr(attn_processor, sub_key)
+            memory_checkpoint(f"Processing module {key}")
+            
+            # Monitor module attribute access
+            with MemoryTracker(f"Getting module attributes for {key}"):
+                attn_processor = self
+                for sub_key in key.split("."):
+                    attn_processor = getattr(attn_processor, sub_key)
 
             # Process non-attention layers, which don't have to_{k,v,q,out_proj}_lora layers
             # or add_{k,v,q,out_proj}_proj_lora layers.
+            track_dict_memory(f"value_dict for {key}", value_dict)
             rank = value_dict["lora.down.weight"].shape[0]
 
             if isinstance(
@@ -214,30 +237,32 @@ def _load_attn_procs(
                     torch.nn.Linear,
                 ),
             ):
-                _load_lora_and_optionally_fuse(
-                    attn_processor,
-                    value_dict,
-                    lora_scale,
-                    mapped_network_alphas.get(key),
-                    rank,
-                    offload_device=offload_device,
-                    adapter_name=adapter_name,
-                    fuse=fuse,
-                )
+                with MemoryTracker(f"Loading LoRA into module {key}"):
+                    _load_lora_and_optionally_fuse(
+                        attn_processor,
+                        value_dict,
+                        lora_scale,
+                        mapped_network_alphas.get(key),
+                        rank,
+                        offload_device=offload_device,
+                        adapter_name=adapter_name,
+                        fuse=fuse,
+                    )
             elif is_peft_available() and isinstance(
                 attn_processor,
                 (peft.tuners.lora.layer.Linear, peft.tuners.lora.layer.Conv2d),
             ):
-                _load_lora_and_optionally_fuse(
-                    attn_processor.base_layer,
-                    value_dict,
-                    lora_scale,
-                    mapped_network_alphas.get(key),
-                    rank,
-                    offload_device=offload_device,
-                    adapter_name=adapter_name,
-                    fuse=fuse,
-                )
+                with MemoryTracker(f"Loading LoRA into PEFT module {key}"):
+                    _load_lora_and_optionally_fuse(
+                        attn_processor.base_layer,
+                        value_dict,
+                        lora_scale,
+                        mapped_network_alphas.get(key),
+                        rank,
+                        offload_device=offload_device,
+                        adapter_name=adapter_name,
+                        fuse=fuse,
+                    )
             else:
                 raise ValueError(
                     f"[OneDiffX _load_attn_procs] Module {key} is not a Conv2d or Linear module, got type {type(attn_processor)}"

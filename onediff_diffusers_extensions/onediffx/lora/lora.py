@@ -29,6 +29,8 @@ from .memory_monitor import (
     MemoryTracker,
     memory_checkpoint,
     track_state_dict_memory,
+    track_dict_memory,
+    monitored_gc_collect,
 )
 
 if is_peft_available():
@@ -182,6 +184,7 @@ def load_lora_and_optionally_fuse(
 
     # Track the loaded state dict
     track_state_dict_memory("Main loaded state_dict", state_dict)
+    track_dict_memory("State dict after loading", state_dict)
 
     # load lora into unet
     with MemoryTracker("UNet LoRA loading"):
@@ -237,6 +240,12 @@ def load_lora_and_optionally_fuse(
                 _pipeline=self,
                 fuse=fuse,
             )
+    
+    # Monitor state dict after all loading operations
+    with MemoryTracker("State dict cleanup check"):
+        track_dict_memory("State dict after all loading", state_dict)
+        track_state_dict_memory("Final state dict memory", state_dict)
+        # Could add state_dict.clear() here to free memory
 
 
 @deprecated()
@@ -375,6 +384,10 @@ def load_state_dict_cached(
         return state_dict, network_alphas
 
     global CachedLoRAs
+    
+    # Monitor cache state at start
+    track_dict_memory("CachedLoRAs at function start", CachedLoRAs)
+    
     weight_name = kwargs.get("weight_name", None)
 
     lora_name = str(lora) + (f"/{weight_name}" if weight_name else "")
@@ -384,6 +397,9 @@ def load_state_dict_cached(
         )
         with MemoryTracker("Cached LoRA retrieval"):
             cached_result = CachedLoRAs[lora_name]
+            # Monitor what we retrieved from cache
+            if isinstance(cached_result, tuple) and len(cached_result) >= 2:
+                track_state_dict_memory(f"Retrieved cached state_dict for {lora_name}", cached_result[0])
         return cached_result
 
     # Pass device parameter to diffusers if specified
@@ -398,6 +414,9 @@ def load_state_dict_cached(
     
     with MemoryTracker("Cached LoRA storage"):
         CachedLoRAs[lora_name] = (state_dict, network_alphas)
+        # Monitor cache after storage
+        track_dict_memory("CachedLoRAs after storage", CachedLoRAs)
+        track_state_dict_memory(f"Stored state_dict for {lora_name}", state_dict)
     
     logger.debug(f"[OneDiffX Cached LoRA] create cached lora of name: {str(lora_name)}")
     return state_dict, network_alphas
