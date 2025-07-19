@@ -23,13 +23,6 @@ from diffusers.utils import is_accelerate_available
 from onediff.utils import logger
 
 from .utils import _load_lora_and_optionally_fuse
-from .memory_monitor import (
-    MemoryTracker,
-    track_state_dict_memory,
-    track_dict_memory,
-    memory_checkpoint,
-    _timestamp,
-)
 
 USE_PEFT_BACKEND = False
 

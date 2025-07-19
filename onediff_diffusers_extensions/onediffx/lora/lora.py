@@ -25,13 +25,6 @@ from .utils import (
     _unfuse_lora,
     is_peft_available,
 )
-from .memory_monitor import (
-    MemoryTracker,
-    memory_checkpoint,
-    track_state_dict_memory,
-    track_dict_memory,
-    _timestamp,
-)
 from .kohya_utils import is_kohya_state_dict, convert_kohya_state_dict_to_diffusers
 from .direct_loader import load_lora_direct, should_use_direct_loader
 
@@ -175,13 +168,12 @@ def load_lora_and_optionally_fuse(
     # Only use regular loading if direct loader wasn't used or failed
     if not skip_format_check or 'state_dict' not in locals():
         if use_cache:
-            with MemoryTracker("Cached LoRA state dict loading"):
-                state_dict, network_alphas = load_state_dict_cached(
-                    pretrained_model_name_or_path_or_dict,
-                    device=device,
-                    unet_config=self.unet.config,
-                    **kwargs,
-                )
+            state_dict, network_alphas = load_state_dict_cached(
+                pretrained_model_name_or_path_or_dict,
+                device=device,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
         else:
             # Pass device parameter to diffusers if specified
             if device is not None:
@@ -194,16 +186,11 @@ def load_lora_and_optionally_fuse(
                     _maybe_map_sgm_blocks_to_diffusers
                 )
             
-            with MemoryTracker("Main LoRA state dict loading from diffusers"):
-                print(f"{_timestamp()} [DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
-                import inspect
-                sig = inspect.signature(LoraLoaderMixin.lora_state_dict)
-                print(f"{_timestamp()} [DEBUG] lora_state_dict signature: {sig}")
-                state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-                    pretrained_model_name_or_path_or_dict,
-                    unet_config=self.unet.config,
-                    **kwargs,
-                )
+            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+                pretrained_model_name_or_path_or_dict,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
             
             if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
                 LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func

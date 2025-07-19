@@ -443,30 +443,20 @@ def load_kohya_lora_direct(
     logger.info(f"[OneDiffX] Loading Kohya LoRA directly from {lora_file} to {device}")
     
     # Load directly to the target device
-    from .memory_monitor import MemoryTracker, _timestamp
+    # Use safetensors to load directly to device
+    state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
     
-    with MemoryTracker(f"Direct Kohya loading to {device}"):
-        print(f"{_timestamp()} [KOHYA DIRECT] Loading {lora_file} directly to {device}")
-        
-        # Use safetensors to load directly to device
-        state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
-        
-        print(f"{_timestamp()} [KOHYA DIRECT] Loaded {len(state_dict)} tensors to {device}")
-        
-        # Verify it's Kohya format
-        if not is_kohya_state_dict(state_dict):
-            # Check first few keys for debugging
-            first_keys = list(state_dict.keys())[:5]
-            logger.error(f"Not a Kohya format LoRA. First keys: {first_keys}")
-            raise ValueError(
-                f"File {lora_file} is not in Kohya format. "
-                "This direct loader only supports Kohya format LoRAs."
-            )
-        
-        # Convert to diffusers format (tensors remain on target device)
-        converted_state_dict, network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
-        
-        print(f"{_timestamp()} [KOHYA DIRECT] Converted to diffusers format: "
-              f"{len(converted_state_dict)} weights, {len(network_alphas)} alphas")
+    # Verify it's Kohya format
+    if not is_kohya_state_dict(state_dict):
+        # Check first few keys for debugging
+        first_keys = list(state_dict.keys())[:5]
+        logger.error(f"Not a Kohya format LoRA. First keys: {first_keys}")
+        raise ValueError(
+            f"File {lora_file} is not in Kohya format. "
+            "This direct loader only supports Kohya format LoRAs."
+        )
+    
+    # Convert to diffusers format (tensors remain on target device)
+    converted_state_dict, network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
     
     return converted_state_dict, network_alphas

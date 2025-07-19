@@ -9,7 +9,6 @@ import safetensors.torch
 from onediff.utils import logger
 
 from .state_dict_utils import convert_state_dict_to_diffusers
-from .memory_monitor import MemoryTracker, _timestamp
 
 
 def load_lora_direct(
@@ -104,31 +103,18 @@ def load_lora_direct(
     logger.info(f"[OneDiffX Direct] Loading LoRA from {lora_file} directly to {device}")
     
     # Load directly to the target device
-    with MemoryTracker(f"Direct LoRA loading to {device}"):
-        print(f"{_timestamp()} [DIRECT LOADER] Loading {lora_file} directly to {device}")
+    # Use safetensors to load directly to device
+    state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
+    
+    # Convert format if needed (auto-detects format: Kohya, PEFT, diffusers old/new)
+    # Pass unet_config if provided
+    if unet_config is not None:
+        kwargs["unet_config"] = unet_config
         
-        # Use safetensors to load directly to device
-        state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
-        
-        print(f"{_timestamp()} [DIRECT LOADER] Loaded {len(state_dict)} tensors to {device}")
-        
-        # Log first few keys for debugging
-        first_keys = list(state_dict.keys())[:5]
-        print(f"{_timestamp()} [DIRECT LOADER] First keys: {first_keys}")
-        
-        # Convert format if needed (auto-detects format: Kohya, PEFT, diffusers old/new)
-        with MemoryTracker("Format detection and conversion"):
-            # Pass unet_config if provided
-            if unet_config is not None:
-                kwargs["unet_config"] = unet_config
-                
-            converted_state_dict = convert_state_dict_to_diffusers(state_dict, **kwargs)
-            
-            # Extract network_alphas if they were set during conversion (e.g., for Kohya format)
-            network_alphas = kwargs.get("_network_alphas", {})
-        
-        print(f"{_timestamp()} [DIRECT LOADER] Conversion complete: "
-              f"{len(converted_state_dict)} weights, {len(network_alphas)} alphas")
+    converted_state_dict = convert_state_dict_to_diffusers(state_dict, **kwargs)
+    
+    # Extract network_alphas if they were set during conversion (e.g., for Kohya format)
+    network_alphas = kwargs.get("_network_alphas", {})
     
     return converted_state_dict, network_alphas
 

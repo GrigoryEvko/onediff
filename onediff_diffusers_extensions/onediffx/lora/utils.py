@@ -20,16 +20,6 @@ if version.parse(diffusers.__version__) <= version.parse("0.20.0"):
 else:
     from diffusers.models.lora import PatchedLoraProjection
 
-from .memory_monitor import (
-    MemoryTracker,
-    memory_checkpoint,
-    track_tensor_memory,
-    track_tensor_lifecycle,
-    track_dict_memory,
-    check_tensor_sharing,
-    _timestamp,
-)
-
 _adapter_layer_names = ()
 
 
