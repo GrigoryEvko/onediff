@@ -128,7 +128,7 @@ def _convert_unet_lora_key(key: str) -> str:
                 new_prefix = "conv_in"
             else:
                 # Check if it's a downsampler block (occurs at 3, 6, 9 with inner_block_type 0 and op suffix)
-                if input_block_num % 3 == 0 and inner_block_type == 0 and len(parts) > 4 and parts[4] == "op":
+                if input_block_num % 3 == 0 and inner_block_type == 0 and len(parts) > 4 and parts[4].startswith("op"):
                     block_id = (input_block_num // 3) - 1
                     new_prefix = f"down_blocks.{block_id}.downsamplers.0"
                 else:
@@ -147,7 +147,7 @@ def _convert_unet_lora_key(key: str) -> str:
             
             # Replace the prefix and reconstruct
             # For downsamplers, skip the "op" part and add "conv" directly
-            if "downsamplers" in new_prefix and len(parts) > 4 and parts[4] == "op":
+            if "downsamplers" in new_prefix and len(parts) > 4 and parts[4].startswith("op"):
                 diffusers_name = new_prefix + ".conv." + "_".join(parts[5:])
             else:
                 diffusers_name = new_prefix + "." + "_".join(parts[4:])
