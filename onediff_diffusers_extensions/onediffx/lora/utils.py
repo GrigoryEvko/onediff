@@ -226,48 +226,13 @@ def _load_lora_and_optionally_fuse(
     down_key = prefix + ".down.weight"
     up_key = prefix + ".up.weight"
 
-    # Track state dict before operations
-    track_dict_memory(f"state_dict at start of {adapter_name}", state_dict)
-    
-    # Track tensor loading and device transfers with detailed lifecycle
-    original_down = state_dict[down_key]
-    original_up = state_dict[up_key]
-    
-    track_tensor_lifecycle(f"{down_key}", original_down, "BEFORE_TRANSFER")
-    track_tensor_lifecycle(f"{up_key}", original_up, "BEFORE_TRANSFER")
-    
-    with MemoryTracker(f"Critical tensor transfer for {down_key}"):
-        w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
-        
-        # Check if tensors share storage
-        check_tensor_sharing(f"original_{down_key}", original_down, f"transferred_{down_key}", w_down)
-        
-        # Track both tensors after transfer
-        track_tensor_lifecycle(f"{down_key}_original", original_down, "AFTER_TRANSFER_ORIGINAL")
-        track_tensor_lifecycle(f"{down_key}_new", w_down, "AFTER_TRANSFER_NEW")
-    
-    with MemoryTracker(f"Critical tensor transfer for {up_key}"):
-        w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
-        
-        # Check if tensors share storage
-        check_tensor_sharing(f"original_{up_key}", original_up, f"transferred_{up_key}", w_up)
-        
-        # Track both tensors after transfer
-        track_tensor_lifecycle(f"{up_key}_original", original_up, "AFTER_TRANSFER_ORIGINAL")
-        track_tensor_lifecycle(f"{up_key}_new", w_up, "AFTER_TRANSFER_NEW")
-    
-    track_tensor_memory(f"Transferred {down_key}", w_down)
-    track_tensor_memory(f"Transferred {up_key}", w_up)
+    # Transfer tensors to device
+    w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
+    w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
     
     # Delete tensors from state dict to free CPU memory
     del state_dict[down_key]
     del state_dict[up_key]
-    # Force deletion of original references
-    del original_down
-    del original_up
-    
-    # Track cleanup
-    print(f"{_timestamp()} [CLEANUP] Deleted {down_key} and {up_key} from state_dict, remaining keys: {len(state_dict)}")
 
     adapter_name = adapter_name if adapter_name is not None else get_adapter_names(self)
 
@@ -282,21 +247,9 @@ def _load_lora_and_optionally_fuse(
     self.lora_alpha[adapter_name] = alpha
     
     # Store the tensors directly without unnecessary offloading
-    with MemoryTracker(f"LoRA tensor storage for {adapter_name}"):
-        # Track module's tensor storage before
-        track_dict_memory(f"self.lora_A before {adapter_name}", self.lora_A)
-        track_dict_memory(f"self.lora_B before {adapter_name}", self.lora_B)
-        
-        self.lora_A[adapter_name] = w_down
-        self.lora_B[adapter_name] = w_up
-        
-        # Track module's tensor storage after
-        track_dict_memory(f"self.lora_A after {adapter_name}", self.lora_A)
-        track_dict_memory(f"self.lora_B after {adapter_name}", self.lora_B)
-        
-        # Track if state dict was cleaned up
-        print(f"{_timestamp()} [CLEANUP_CHECK] State dict now has {len(state_dict)} tensors after transfer (should be 0)")
-        
+    self.lora_A[adapter_name] = w_down
+    self.lora_B[adapter_name] = w_up
+    
     self.adapter_names.add(adapter_name)
 
     if fuse:
@@ -311,14 +264,9 @@ def _load_lora_and_optionally_fuse(
             )
         self.active_adapter_names[adapter_name] = lora_scale
         
-        with MemoryTracker(f"LoRA weight fusion for {adapter_name}"):
-            lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
-            track_tensor_memory(f"LoRA delta weight for {adapter_name}", lora_weight)
-            
-            fused_weight = self.weight.data.float() + lora_weight
-            track_tensor_memory(f"Fused weight for {adapter_name}", fused_weight)
-            
-            self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
+        lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
+        fused_weight = self.weight.data.float() + lora_weight
+        self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
 
 
 def _unfuse_lora(

@@ -88,22 +88,19 @@ def load_lora_into_text_encoder(
         text_encoder_keys = [
             k for k in keys if k.startswith(prefix) and k.split(".")[0] == prefix
         ]
-        with MemoryTracker(f"Text encoder state dict filtering for {prefix}"):
-            text_encoder_lora_state_dict = {
-                k.replace(f"{prefix}.", ""): v
-                for k, v in state_dict.items()
-                if k in text_encoder_keys
-            }
+        text_encoder_lora_state_dict = {
+            k.replace(f"{prefix}.", ""): v
+            for k, v in state_dict.items()
+            if k in text_encoder_keys
+        }
 
         if len(text_encoder_lora_state_dict) > 0:
             logger.info(f"Loading {prefix}.")
-            track_state_dict_memory(f"Text encoder {prefix} filtered state_dict", text_encoder_lora_state_dict)
             
             rank = {}
-            with MemoryTracker(f"Text encoder state dict conversion for {prefix}"):
-                text_encoder_lora_state_dict = convert_state_dict_to_diffusers(
-                    text_encoder_lora_state_dict
-                )
+            text_encoder_lora_state_dict = convert_state_dict_to_diffusers(
+                text_encoder_lora_state_dict
+            )
 
             if USE_PEFT_BACKEND:
                 # convert state dict
@@ -205,13 +202,7 @@ def load_lora_into_text_encoder(
                 network_alphas = {} if network_alphas is None else network_alphas
                 is_network_alphas_populated = len(network_alphas) > 0
 
-                # Monitor text encoder attention modules processing
-                with MemoryTracker("Processing text encoder attention modules"):
-                    module_count = sum(1 for _ in text_encoder_attn_modules(text_encoder))
-                    print(f"{_timestamp()} [TEXT_ENCODER] Processing {module_count} attention modules")
-
                 for name, attn_module in text_encoder_attn_modules(text_encoder):
-                    memory_checkpoint(f"Processing attention module {name}")
                     
                     query_alpha = network_alphas.pop(
                         name + ".to_q_lora.down.weight.alpha", None
@@ -233,18 +224,13 @@ def load_lora_into_text_encoder(
                     else:
                         current_rank = rank
 
-                    # Monitor state dict extraction
-                    q_proj_dict = te_lora_grouped_dict.pop(f"{name}.q_proj")
-                    track_dict_memory(f"Module state for {name}.q_proj", q_proj_dict)
-                    
-                    with MemoryTracker(f"Loading LoRA into {name}.q_proj"):
-                        _load_lora_and_optionally_fuse(
-                            attn_module.q_proj,
-                            q_proj_dict,
-                            lora_scale,
-                            query_alpha,
-                            current_rank,
-                            adapter_name=adapter_name,
+                    _load_lora_and_optionally_fuse(
+                        attn_module.q_proj,
+                        te_lora_grouped_dict.pop(f"{name}.q_proj"),
+                        lora_scale,
+                        query_alpha,
+                        current_rank,
+                        adapter_name=adapter_name,
                         prefix="lora_linear_layer",
                         fuse=fuse,
                     )
@@ -280,13 +266,7 @@ def load_lora_into_text_encoder(
                     )
 
                 if patch_mlp:
-                    # Monitor text encoder MLP modules processing
-                    with MemoryTracker("Processing text encoder MLP modules"):
-                        mlp_module_count = sum(1 for _ in text_encoder_mlp_modules(text_encoder))
-                        print(f"{_timestamp()} [TEXT_ENCODER] Processing {mlp_module_count} MLP modules")
-                    
                     for name, mlp_module in text_encoder_mlp_modules(text_encoder):
-                        memory_checkpoint(f"Processing MLP module {name}")
                         
                         fc1_alpha = network_alphas.pop(
                             name + ".fc1.lora_linear_layer.down.weight.alpha", None
@@ -302,10 +282,9 @@ def load_lora_into_text_encoder(
                             f"{name}.fc2.lora_linear_layer.up.weight"
                         )
 
-                        with MemoryTracker(f"Loading LoRA into {name}.fc1"):
-                            _load_lora_and_optionally_fuse(
-                                mlp_module.fc1,
-                                te_lora_grouped_dict.pop(f"{name}.fc1"),
+                        _load_lora_and_optionally_fuse(
+                            mlp_module.fc1,
+                            te_lora_grouped_dict.pop(f"{name}.fc1"),
                             lora_scale,
                             fc1_alpha,
                             current_rank_fc1,

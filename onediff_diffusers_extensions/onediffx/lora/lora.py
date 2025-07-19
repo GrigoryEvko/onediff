@@ -148,15 +148,14 @@ def load_lora_and_optionally_fuse(
     if should_use_direct_loader(pretrained_model_name_or_path_or_dict, **kwargs):
         try:
             logger.info("[OneDiffX] Using direct GPU loader to avoid CPU memory overhead")
-            with MemoryTracker("Direct LoRA loading"):
-                state_dict, network_alphas = load_lora_direct(
-                    pretrained_model_name_or_path_or_dict,
-                    device=device,
-                    unet_config=self.unet.config,
-                    **kwargs,
-                )
-                # Skip format checks below since direct loader already handled conversion
-                skip_format_check = True
+            state_dict, network_alphas = load_lora_direct(
+                pretrained_model_name_or_path_or_dict,
+                device=device,
+                unet_config=self.unet.config,
+                **kwargs,
+            )
+            # Skip format checks below since direct loader already handled conversion
+            skip_format_check = True
         except Exception as e:
             # Direct loader failed, fall back to regular loading
             logger.warning(f"[OneDiffX] Direct loader error: {e}, falling back to diffusers")
@@ -199,46 +198,39 @@ def load_lora_and_optionally_fuse(
     # Skip this if we already used the direct loader (skip_format_check is True)
     if not skip_format_check and is_kohya_state_dict(state_dict):
         logger.info("[OneDiffX] Detected Kohya format LoRA, converting to diffusers format while preserving GPU tensors")
-        with MemoryTracker("Kohya format conversion"):
-            state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
-            # Merge converted alphas with existing ones
-            if converted_network_alphas:
-                if network_alphas is None:
-                    network_alphas = {}
-                network_alphas.update(converted_network_alphas)
+        state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
+        # Merge converted alphas with existing ones
+        if converted_network_alphas:
+            if network_alphas is None:
+                network_alphas = {}
+            network_alphas.update(converted_network_alphas)
     
     is_correct_format = all("lora" in key for key in state_dict.keys())
     if not is_correct_format:
         raise ValueError("[OneDiffX load_and_fuse_lora] Invalid LoRA checkpoint.")
 
-    # Track the loaded state dict
-    track_state_dict_memory("Main loaded state_dict", state_dict)
-    track_dict_memory("State dict after loading", state_dict)
+    # State dict loaded successfully
 
     # load lora into unet
-    with MemoryTracker("UNet LoRA loading"):
-        load_lora_into_unet(
-            self,
-            state_dict,
-            network_alphas,
-            self.unet,
-            adapter_name=adapter_name,
-            lora_scale=lora_scale,
-            offload_device=offload_device,
-            use_cache=use_cache,
-            fuse=fuse,
-        )
+    load_lora_into_unet(
+        self,
+        state_dict,
+        network_alphas,
+        self.unet,
+        adapter_name=adapter_name,
+        lora_scale=lora_scale,
+        offload_device=offload_device,
+        use_cache=use_cache,
+        fuse=fuse,
+    )
 
     # load lora weights into text encoder
-    with MemoryTracker("Text encoder state dict filtering"):
-        text_encoder_state_dict = {
+    text_encoder_state_dict = {
             k: v for k, v in state_dict.items() if "text_encoder." in k
         }
     
     if len(text_encoder_state_dict) > 0:
-        track_state_dict_memory("Text encoder filtered state_dict", text_encoder_state_dict)
-        with MemoryTracker("Text encoder LoRA loading"):
-            load_lora_into_text_encoder(
+        load_lora_into_text_encoder(
                 self,
                 text_encoder_state_dict,
                 network_alphas=network_alphas,
@@ -250,15 +242,12 @@ def load_lora_and_optionally_fuse(
                 fuse=fuse,
             )
 
-    with MemoryTracker("Text encoder 2 state dict filtering"):
-        text_encoder_2_state_dict = {
+    text_encoder_2_state_dict = {
             k: v for k, v in state_dict.items() if "text_encoder_2." in k
         }
     
     if len(text_encoder_2_state_dict) > 0 and hasattr(self, "text_encoder_2"):
-        track_state_dict_memory("Text encoder 2 filtered state_dict", text_encoder_2_state_dict)
-        with MemoryTracker("Text encoder 2 LoRA loading"):
-            load_lora_into_text_encoder(
+        load_lora_into_text_encoder(
                 self,
                 text_encoder_2_state_dict,
                 network_alphas=network_alphas,
@@ -270,18 +259,12 @@ def load_lora_and_optionally_fuse(
                 fuse=fuse,
             )
     
-    # Monitor state dict after all loading operations and clean up
-    with MemoryTracker("State dict cleanup"):
-        track_dict_memory("State dict after all loading", state_dict)
-        track_state_dict_memory("Final state dict memory", state_dict)
-        
-        # Clear the state dict to free any remaining CPU memory
-        # Note: This is safe because we've already transferred all needed tensors
-        remaining_keys = list(state_dict.keys())
-        if remaining_keys:
-            print(f"{_timestamp()} [CLEANUP] Clearing {len(remaining_keys)} remaining keys from state_dict")
-            print(f"{_timestamp()} [CLEANUP] Remaining keys: {remaining_keys[:5]}{'...' if len(remaining_keys) > 5 else ''}")
-            state_dict.clear()
+    # Clear the state dict to free any remaining CPU memory
+    # Note: This is safe because we've already transferred all needed tensors
+    remaining_keys = list(state_dict.keys())
+    if remaining_keys:
+        logger.debug(f"[OneDiffX] Clearing {len(remaining_keys)} remaining keys from state_dict")
+        state_dict.clear()
 
 
 @deprecated()
@@ -415,15 +398,12 @@ def load_state_dict_cached(
 ) -> Tuple[Dict, Dict]:
     assert isinstance(lora, (str, Path, dict))
     if isinstance(lora, dict):
-        with MemoryTracker("Cached LoRA from dict"):
-            # Use direct loader which handles format detection and conversion
-            state_dict, network_alphas = load_lora_direct(lora, device=device, **kwargs)
+        # Use direct loader which handles format detection and conversion
+        state_dict, network_alphas = load_lora_direct(lora, device=device, **kwargs)
         return state_dict, network_alphas
 
     global CachedLoRAs
     
-    # Monitor cache state at start
-    track_dict_memory("CachedLoRAs at function start", CachedLoRAs)
     
     weight_name = kwargs.get("weight_name", None)
 
@@ -432,38 +412,34 @@ def load_state_dict_cached(
         logger.debug(
             f"[OneDiffX Cached LoRA] get cached lora of name: {str(lora_name)}"
         )
-        with MemoryTracker("Cached LoRA retrieval"):
-            cached_result = CachedLoRAs[lora_name]
-            # Monitor what we retrieved from cache
-            if isinstance(cached_result, tuple) and len(cached_result) >= 2:
-                track_state_dict_memory(f"Retrieved cached state_dict for {lora_name}", cached_result[0])
+        cached_result = CachedLoRAs[lora_name]
+        # Check if we need to move tensors to the requested device
+        if isinstance(cached_result, tuple) and len(cached_result) >= 2:
+            # Check if we need to move tensors to the requested device
+            if device is not None:
+                state_dict, network_alphas = cached_result[0], cached_result[1]
+                target_device = torch.device(device) if isinstance(device, str) else device
                 
-                # Check if we need to move tensors to the requested device
-                if device is not None:
-                    state_dict, network_alphas = cached_result[0], cached_result[1]
-                    target_device = torch.device(device) if isinstance(device, str) else device
+                # Check if any tensors are on the wrong device
+                needs_device_transfer = False
+                for key, tensor in state_dict.items():
+                    if torch.is_tensor(tensor) and tensor.device != target_device:
+                        needs_device_transfer = True
+                        break
+                
+                if needs_device_transfer:
+                    logger.info(f"[OneDiffX Cached LoRA] Moving cached tensors from {tensor.device} to {target_device}")
+                    # Create new state dict with tensors on correct device
+                    new_state_dict = {}
+                    for key, value in state_dict.items():
+                        if torch.is_tensor(value):
+                            new_state_dict[key] = value.to(target_device)
+                        else:
+                            new_state_dict[key] = value
                     
-                    # Check if any tensors are on the wrong device
-                    needs_device_transfer = False
-                    for key, tensor in state_dict.items():
-                        if torch.is_tensor(tensor) and tensor.device != target_device:
-                            needs_device_transfer = True
-                            break
-                    
-                    if needs_device_transfer:
-                        logger.info(f"[OneDiffX Cached LoRA] Moving cached tensors from {tensor.device} to {target_device}")
-                        # Create new state dict with tensors on correct device
-                        new_state_dict = {}
-                        with MemoryTracker(f"Moving cached tensors to {target_device}"):
-                            for key, value in state_dict.items():
-                                if torch.is_tensor(value):
-                                    new_state_dict[key] = value.to(target_device)
-                                else:
-                                    new_state_dict[key] = value
-                        
-                        # Update cache with tensors on correct device
-                        CachedLoRAs[lora_name] = (new_state_dict, network_alphas)
-                        return new_state_dict, network_alphas
+                    # Update cache with tensors on correct device
+                    CachedLoRAs[lora_name] = (new_state_dict, network_alphas)
+                    return new_state_dict, network_alphas
                 
         return cached_result
 
@@ -471,8 +447,7 @@ def load_state_dict_cached(
     if should_use_direct_loader(lora, **kwargs):
         try:
             logger.info("[OneDiffX Cached] Using direct GPU loader for cached LoRA")
-            with MemoryTracker("Cached direct LoRA loading"):
-                state_dict, network_alphas = load_lora_direct(
+            state_dict, network_alphas = load_lora_direct(
                     lora,
                     device=device,
                     **kwargs,
@@ -491,8 +466,7 @@ def load_state_dict_cached(
         if device is not None:
             kwargs['device'] = device
             
-        with MemoryTracker("Cached LoRA initial loading from diffusers"):
-            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
                 lora,
                 **kwargs,
             )
@@ -500,18 +474,13 @@ def load_state_dict_cached(
         # Check if the state dict is in Kohya format and convert if needed
         if is_kohya_state_dict(state_dict):
             logger.info("[OneDiffX Cached] Detected Kohya format LoRA, converting to diffusers format")
-            with MemoryTracker("Cached Kohya format conversion"):
-                state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
-                if converted_network_alphas:
-                    if network_alphas is None:
-                        network_alphas = {}
-                    network_alphas.update(converted_network_alphas)
+            state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
+            if converted_network_alphas:
+                if network_alphas is None:
+                    network_alphas = {}
+                network_alphas.update(converted_network_alphas)
     
-    with MemoryTracker("Cached LoRA storage"):
-        CachedLoRAs[lora_name] = (state_dict, network_alphas)
-        # Monitor cache after storage
-        track_dict_memory("CachedLoRAs after storage", CachedLoRAs)
-        track_state_dict_memory(f"Stored state_dict for {lora_name}", state_dict)
+    CachedLoRAs[lora_name] = (state_dict, network_alphas)
     
     logger.debug(f"[OneDiffX Cached LoRA] create cached lora of name: {str(lora_name)}")
     return state_dict, network_alphas
