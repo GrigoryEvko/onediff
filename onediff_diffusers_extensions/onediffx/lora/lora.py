@@ -241,11 +241,19 @@ def load_lora_and_optionally_fuse(
                 fuse=fuse,
             )
     
-    # Monitor state dict after all loading operations
-    with MemoryTracker("State dict cleanup check"):
+    # Monitor state dict after all loading operations and clean up
+    with MemoryTracker("State dict cleanup"):
         track_dict_memory("State dict after all loading", state_dict)
         track_state_dict_memory("Final state dict memory", state_dict)
-        # Could add state_dict.clear() here to free memory
+        
+        # Clear the state dict to free any remaining CPU memory
+        # Note: This is safe because we've already transferred all needed tensors
+        remaining_keys = list(state_dict.keys())
+        if remaining_keys:
+            print(f"[CLEANUP] Clearing {len(remaining_keys)} remaining keys from state_dict")
+            print(f"[CLEANUP] Remaining keys: {remaining_keys[:5]}{'...' if len(remaining_keys) > 5 else ''}")
+            state_dict.clear()
+            monitored_gc_collect("After clearing final state_dict")
 
 
 @deprecated()

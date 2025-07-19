@@ -240,6 +240,7 @@ def _load_lora_and_optionally_fuse(
     track_dict_memory(f"state_dict at start of {adapter_name}", state_dict)
     
     # Track tensor loading and device transfers with detailed lifecycle
+    # Note: We peek at the tensors first for monitoring
     original_down = state_dict[down_key]
     original_up = state_dict[up_key]
     
@@ -247,7 +248,8 @@ def _load_lora_and_optionally_fuse(
     track_tensor_lifecycle(f"{up_key}", original_up, "BEFORE_TRANSFER")
     
     with MemoryTracker(f"Critical tensor transfer for {down_key}"):
-        w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
+        # Use pop() to remove tensor from state_dict and free CPU memory
+        w_down = state_dict.pop(down_key).to(device=device, dtype=torch.float32)
         
         # Check if tensors share storage
         check_tensor_sharing(f"original_{down_key}", original_down, f"transferred_{down_key}", w_down)
@@ -257,7 +259,8 @@ def _load_lora_and_optionally_fuse(
         track_tensor_lifecycle(f"{down_key}_new", w_down, "AFTER_TRANSFER_NEW")
     
     with MemoryTracker(f"Critical tensor transfer for {up_key}"):
-        w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
+        # Use pop() to remove tensor from state_dict and free CPU memory
+        w_up = state_dict.pop(up_key).to(device=device, dtype=torch.float32)
         
         # Check if tensors share storage
         check_tensor_sharing(f"original_{up_key}", original_up, f"transferred_{up_key}", w_up)
@@ -294,8 +297,11 @@ def _load_lora_and_optionally_fuse(
         track_dict_memory(f"self.lora_A after {adapter_name}", self.lora_A)
         track_dict_memory(f"self.lora_B after {adapter_name}", self.lora_B)
         
-        # Track if state dict could be cleaned up here
-        print(f"[CLEANUP_CHECK] State dict still has {len(state_dict)} tensors after transfer")
+        # Track if state dict was cleaned up
+        print(f"[CLEANUP_CHECK] State dict now has {len(state_dict)} tensors after transfer (should be 0)")
+        
+        # Force garbage collection to free CPU memory immediately
+        monitored_gc_collect(f"After transferring {adapter_name} tensors")
         
     self.adapter_names.add(adapter_name)
 
