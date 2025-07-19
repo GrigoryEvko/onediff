@@ -123,12 +123,12 @@ def _convert_unet_lora_key(key: str) -> str:
             input_block_num = int(parts[2])
             inner_block_type = int(parts[3])
             
-            # Special case for input_blocks.0 (conv_in)
-            if input_block_num == 0:
+            # Special case for input_blocks.0.0 (conv_in)
+            if input_block_num == 0 and inner_block_type == 0:
                 new_prefix = "conv_in"
             else:
-                # Check if it's a downsampler block (occurs at 3, 6, 9)
-                if input_block_num % 3 == 0:
+                # Check if it's a downsampler block (occurs at 3, 6, 9 with inner_block_type 0 and op suffix)
+                if input_block_num % 3 == 0 and inner_block_type == 0 and len(parts) > 4 and parts[4] == "op":
                     block_id = (input_block_num // 3) - 1
                     new_prefix = f"down_blocks.{block_id}.downsamplers.0"
                 else:
@@ -195,8 +195,51 @@ def _convert_unet_lora_key(key: str) -> str:
             # Replace the prefix and reconstruct
             diffusers_name = new_prefix + "." + "_".join(parts[3:])
     
+    # Handle time_embed pattern before converting underscores
+    if diffusers_name.startswith("time_embed_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 3 and parts[2].isdigit():
+            time_id = int(parts[2])
+            # time_embed.0 → time_embedding.linear_1
+            # time_embed.2 → time_embedding.linear_2
+            linear_id = (time_id // 2) + 1
+            new_prefix = f"time_embedding.linear_{linear_id}"
+            diffusers_name = new_prefix + "." + "_".join(parts[3:])
+    
+    # Handle label_emb pattern before converting underscores
+    elif diffusers_name.startswith("label_emb_0_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 4 and parts[3].isdigit():
+            label_id = int(parts[3])
+            # label_emb.0.0 → add_embedding.linear_1
+            # label_emb.0.2 → add_embedding.linear_2
+            linear_id = (label_id // 2) + 1
+            new_prefix = f"add_embedding.linear_{linear_id}"
+            diffusers_name = new_prefix + "." + "_".join(parts[4:])
+    
+    # Handle output conversion layers
+    elif diffusers_name.startswith("out_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            out_id = int(parts[1])
+            if out_id == 0:
+                new_prefix = "conv_norm_out"
+            elif out_id == 2:
+                new_prefix = "conv_out"
+            else:
+                new_prefix = f"out.{out_id}"
+            diffusers_name = new_prefix + "." + "_".join(parts[2:])
+    
     # Now convert remaining underscores to dots
     diffusers_name = diffusers_name.replace("_", ".")
+    
+    # ResNet layer conversions (based on Kohya source)
+    diffusers_name = diffusers_name.replace("in.layers.0.", "norm1.")
+    diffusers_name = diffusers_name.replace("in.layers.2.", "conv1.")
+    diffusers_name = diffusers_name.replace("out.layers.0.", "norm2.")
+    diffusers_name = diffusers_name.replace("out.layers.3.", "conv2.")
+    diffusers_name = diffusers_name.replace("emb.layers.1.", "time_emb_proj.")
+    diffusers_name = diffusers_name.replace("skip.connection.", "conv_shortcut.")
     
     # Standard conversions
     diffusers_name = diffusers_name.replace("transformer.blocks", "transformer_blocks")
@@ -210,23 +253,16 @@ def _convert_unet_lora_key(key: str) -> str:
     # Projection conversions
     diffusers_name = diffusers_name.replace("proj.in", "proj_in")
     diffusers_name = diffusers_name.replace("proj.out", "proj_out")
-    diffusers_name = diffusers_name.replace("emb.layers", "time_emb_proj")
     
-    # SDXL specific
-    if "emb" in diffusers_name and "time.emb.proj" not in diffusers_name:
+    # Downsampler/upsampler op → conv conversion
+    if "downsamplers" in diffusers_name or "upsamplers" in diffusers_name:
+        diffusers_name = diffusers_name.replace(".op.", ".conv.")
+    
+    # SDXL specific time embedding handling
+    if "emb" in diffusers_name and "time.emb.proj" not in diffusers_name and "time_emb_proj" not in diffusers_name:
+        # Remove trailing number from emb layers
         pattern = r"\.\d+(?=\D*$)"
         diffusers_name = re.sub(pattern, "", diffusers_name, count=1)
-    
-    if ".in." in diffusers_name:
-        diffusers_name = diffusers_name.replace("in.layers.2", "conv1")
-    if ".out." in diffusers_name:
-        diffusers_name = diffusers_name.replace("out.layers.3", "conv2")
-    
-    if "downsamplers" in diffusers_name or "upsamplers" in diffusers_name:
-        diffusers_name = diffusers_name.replace("op", "conv")
-    
-    if "skip" in diffusers_name:
-        diffusers_name = diffusers_name.replace("skip.connection", "conv_shortcut")
     
     # LyCORIS specific
     if "time.emb.proj" in diffusers_name:
