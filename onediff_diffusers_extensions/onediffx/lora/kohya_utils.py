@@ -146,7 +146,11 @@ def _convert_unet_lora_key(key: str) -> str:
                         new_prefix = f"down_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
             
             # Replace the prefix and reconstruct
-            diffusers_name = new_prefix + "." + "_".join(parts[4:])
+            # For downsamplers, skip the "op" part and add "conv" directly
+            if "downsamplers" in new_prefix and len(parts) > 4 and parts[4] == "op":
+                diffusers_name = new_prefix + ".conv." + "_".join(parts[5:])
+            else:
+                diffusers_name = new_prefix + "." + "_".join(parts[4:])
     
     # Handle output_blocks_X_Y pattern
     elif diffusers_name.startswith("output_blocks_"):
@@ -172,7 +176,11 @@ def _convert_unet_lora_key(key: str) -> str:
                     new_prefix = f"up_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
             
             # Replace the prefix and reconstruct
-            diffusers_name = new_prefix + "." + "_".join(parts[4:])
+            # For upsamplers, handle potential upsampler conversion
+            if "upsamplers" in new_prefix:
+                diffusers_name = new_prefix + "." + "_".join(parts[4:])
+            else:
+                diffusers_name = new_prefix + "." + "_".join(parts[4:])
     
     # Handle middle_block_X pattern
     elif diffusers_name.startswith("middle_block_"):
