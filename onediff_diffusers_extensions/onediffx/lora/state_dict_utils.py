@@ -18,6 +18,8 @@ State dict utilities: utility methods for converting state dicts easily
 # The code is copied from https://github.com/huggingface/diffusers/blob/87a92f779c5ba9c180aec4b90c38149eb108d888/src/diffusers/utils/state_dict_utils.py
 
 import enum
+from typing import Dict, Optional
+import torch
 
 
 class StateDictType(enum.Enum):
@@ -26,7 +28,7 @@ class StateDictType(enum.Enum):
     """
 
     DIFFUSERS_OLD = "diffusers_old"
-    # KOHYA_SS = "kohya_ss" # TODO: implement this
+    KOHYA_SS = "kohya_ss"
     PEFT = "peft"
     DIFFUSERS = "diffusers"
 
@@ -207,8 +209,16 @@ def convert_state_dict_to_diffusers(state_dict, original_type=None, **kwargs):
         peft_adapter_name = ""
 
     if original_type is None:
+        # Check for Kohya format first
+        kohya_prefixes = ("lora_unet_", "lora_te_", "lora_te1_", "lora_te2_")
+        kohya_suffixes = (".lora_down.weight", ".lora_up.weight", ".alpha")
+        if any(
+            k.startswith(kohya_prefixes) and k.endswith(kohya_suffixes)
+            for k in state_dict.keys()
+        ):
+            original_type = StateDictType.KOHYA_SS
         # Old diffusers to PEFT
-        if any("to_out_lora" in k for k in state_dict.keys()):
+        elif any("to_out_lora" in k for k in state_dict.keys()):
             original_type = StateDictType.DIFFUSERS_OLD
         elif any(f".lora_A{peft_adapter_name}.weight" in k for k in state_dict.keys()):
             original_type = StateDictType.PEFT
@@ -218,6 +228,24 @@ def convert_state_dict_to_diffusers(state_dict, original_type=None, **kwargs):
         else:
             raise ValueError("Could not automatically infer state dict type")
 
+    # Handle Kohya format separately using our GPU-preserving converter
+    if original_type == StateDictType.KOHYA_SS:
+        from .kohya_utils import convert_kohya_state_dict_to_diffusers
+        
+        # Extract module names from kwargs if provided
+        unet_name = kwargs.get("unet_name", "unet")
+        text_encoder_name = kwargs.get("text_encoder_name", "text_encoder")
+        
+        # Convert using our GPU-preserving converter
+        converted_state_dict, network_alphas = convert_kohya_state_dict_to_diffusers(
+            state_dict, unet_name=unet_name, text_encoder_name=text_encoder_name
+        )
+        
+        # Store network_alphas in kwargs for caller to retrieve if needed
+        kwargs["_network_alphas"] = network_alphas
+        
+        return converted_state_dict
+    
     if original_type not in DIFFUSERS_STATE_DICT_MAPPINGS.keys():
         raise ValueError(f"Original type {original_type} is not supported")
 

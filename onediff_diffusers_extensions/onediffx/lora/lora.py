@@ -32,6 +32,8 @@ from .memory_monitor import (
     track_dict_memory,
     _timestamp,
 )
+from .kohya_utils import is_kohya_state_dict, convert_kohya_state_dict_to_diffusers
+from .direct_loader import load_lora_direct, should_use_direct_loader
 
 if is_peft_available():
     import peft
@@ -149,40 +151,75 @@ def load_lora_and_optionally_fuse(
 
     self = pipeline
 
-    if use_cache:
-        with MemoryTracker("Cached LoRA state dict loading"):
-            state_dict, network_alphas = load_state_dict_cached(
-                pretrained_model_name_or_path_or_dict,
-                device=device,
-                unet_config=self.unet.config,
-                **kwargs,
-            )
+    # Check if we should use the direct loader
+    if should_use_direct_loader(pretrained_model_name_or_path_or_dict, **kwargs):
+        try:
+            logger.info("[OneDiffX] Using direct GPU loader to avoid CPU memory overhead")
+            with MemoryTracker("Direct LoRA loading"):
+                state_dict, network_alphas = load_lora_direct(
+                    pretrained_model_name_or_path_or_dict,
+                    device=device,
+                    unet_config=self.unet.config,
+                    **kwargs,
+                )
+                # Skip format checks below since direct loader already handled conversion
+                skip_format_check = True
+        except Exception as e:
+            # Direct loader failed, fall back to regular loading
+            logger.warning(f"[OneDiffX] Direct loader error: {e}, falling back to diffusers")
+            skip_format_check = False
+            # Continue with regular loading below
     else:
-        # Pass device parameter to diffusers if specified
-        if device is not None:
-            kwargs['device'] = device
+        skip_format_check = False
+    
+    # Only use regular loading if direct loader wasn't used or failed
+    if not skip_format_check or 'state_dict' not in locals():
+        if use_cache:
+            with MemoryTracker("Cached LoRA state dict loading"):
+                state_dict, network_alphas = load_state_dict_cached(
+                    pretrained_model_name_or_path_or_dict,
+                    device=device,
+                    unet_config=self.unet.config,
+                    **kwargs,
+                )
+        else:
+            # Pass device parameter to diffusers if specified
+            if device is not None:
+                kwargs['device'] = device
+                
+            # for diffusers <= 0.20
+            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+                orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
+                LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
+                    _maybe_map_sgm_blocks_to_diffusers
+                )
             
-        # for diffusers <= 0.20
-        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-            orig_func = getattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers")
-            LoraLoaderMixin._map_sgm_blocks_to_diffusers = (
-                _maybe_map_sgm_blocks_to_diffusers
-            )
-        
-        with MemoryTracker("Main LoRA state dict loading from diffusers"):
-            print(f"{_timestamp()} [DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
-            import inspect
-            sig = inspect.signature(LoraLoaderMixin.lora_state_dict)
-            print(f"{_timestamp()} [DEBUG] lora_state_dict signature: {sig}")
-            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-                pretrained_model_name_or_path_or_dict,
-                unet_config=self.unet.config,
-                **kwargs,
-            )
-        
-        if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
-            LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
+            with MemoryTracker("Main LoRA state dict loading from diffusers"):
+                print(f"{_timestamp()} [DEBUG] Calling lora_state_dict with device: {kwargs.get('device', 'NOT SET')}")
+                import inspect
+                sig = inspect.signature(LoraLoaderMixin.lora_state_dict)
+                print(f"{_timestamp()} [DEBUG] lora_state_dict signature: {sig}")
+                state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+                    pretrained_model_name_or_path_or_dict,
+                    unet_config=self.unet.config,
+                    **kwargs,
+                )
+            
+            if hasattr(LoraLoaderMixin, "_map_sgm_blocks_to_diffusers"):
+                LoraLoaderMixin._map_sgm_blocks_to_diffusers = orig_func
 
+    # Check if the state dict is in Kohya format and convert if needed
+    # Skip this if we already used the direct loader (skip_format_check is True)
+    if not skip_format_check and is_kohya_state_dict(state_dict):
+        logger.info("[OneDiffX] Detected Kohya format LoRA, converting to diffusers format while preserving GPU tensors")
+        with MemoryTracker("Kohya format conversion"):
+            state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
+            # Merge converted alphas with existing ones
+            if converted_network_alphas:
+                if network_alphas is None:
+                    network_alphas = {}
+                network_alphas.update(converted_network_alphas)
+    
     is_correct_format = all("lora" in key for key in state_dict.keys())
     if not is_correct_format:
         raise ValueError("[OneDiffX load_and_fuse_lora] Invalid LoRA checkpoint.")
@@ -392,7 +429,8 @@ def load_state_dict_cached(
     assert isinstance(lora, (str, Path, dict))
     if isinstance(lora, dict):
         with MemoryTracker("Cached LoRA from dict"):
-            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(lora, **kwargs)
+            # Use direct loader which handles format detection and conversion
+            state_dict, network_alphas = load_lora_direct(lora, device=device, **kwargs)
         return state_dict, network_alphas
 
     global CachedLoRAs
@@ -442,15 +480,45 @@ def load_state_dict_cached(
                 
         return cached_result
 
-    # Pass device parameter to diffusers if specified
-    if device is not None:
-        kwargs['device'] = device
+    # Try to use direct loader for file paths
+    if should_use_direct_loader(lora, **kwargs):
+        try:
+            logger.info("[OneDiffX Cached] Using direct GPU loader for cached LoRA")
+            with MemoryTracker("Cached direct LoRA loading"):
+                state_dict, network_alphas = load_lora_direct(
+                    lora,
+                    device=device,
+                    **kwargs,
+                )
+        except Exception as e:
+            # Direct loader failed, fall back to regular loading
+            logger.warning(f"[OneDiffX Cached] Direct loader error: {e}, falling back to diffusers")
+            # Fall through to regular loading below
+            state_dict = None
+    else:
+        state_dict = None
+    
+    # Fall back to regular loading if direct loader wasn't used or failed
+    if state_dict is None:
+        # Pass device parameter to diffusers if specified
+        if device is not None:
+            kwargs['device'] = device
+            
+        with MemoryTracker("Cached LoRA initial loading from diffusers"):
+            state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
+                lora,
+                **kwargs,
+            )
         
-    with MemoryTracker("Cached LoRA initial loading from diffusers"):
-        state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(
-            lora,
-            **kwargs,
-        )
+        # Check if the state dict is in Kohya format and convert if needed
+        if is_kohya_state_dict(state_dict):
+            logger.info("[OneDiffX Cached] Detected Kohya format LoRA, converting to diffusers format")
+            with MemoryTracker("Cached Kohya format conversion"):
+                state_dict, converted_network_alphas = convert_kohya_state_dict_to_diffusers(state_dict)
+                if converted_network_alphas:
+                    if network_alphas is None:
+                        network_alphas = {}
+                    network_alphas.update(converted_network_alphas)
     
     with MemoryTracker("Cached LoRA storage"):
         CachedLoRAs[lora_name] = (state_dict, network_alphas)
