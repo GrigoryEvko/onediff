@@ -24,6 +24,33 @@ if is_accelerate_available():
 USE_PEFT_BACKEND = False
 
 
+def _get_submodule_by_name(root_module, module_path: str):
+    """
+    Get a submodule from a module using a dot-separated path.
+    Handles numeric indices for list/sequential modules.
+    
+    Args:
+        root_module: The root module to start from
+        module_path: Dot-separated path (e.g., "down_blocks.0.attentions.1")
+    
+    Returns:
+        The requested submodule
+    """
+    current = root_module
+    parts = module_path.split(".")
+    
+    for part in parts:
+        if part.isdigit():
+            # Handle numeric indices (for ModuleList, Sequential, etc.)
+            idx = int(part)
+            current = current[idx]
+        else:
+            # Handle named attributes
+            current = getattr(current, part)
+    
+    return current
+
+
 def load_lora_into_unet(
     self,
     state_dict,
@@ -220,9 +247,8 @@ def _load_attn_procs(
             
             # Monitor module attribute access
             with MemoryTracker(f"Getting module attributes for {key}"):
-                attn_processor = self
-                for sub_key in key.split("."):
-                    attn_processor = getattr(attn_processor, sub_key)
+                # Use proper module navigation that handles numeric indices
+                attn_processor = _get_submodule_by_name(self, key)
 
             # Process non-attention layers, which don't have to_{k,v,q,out_proj}_lora layers
             # or add_{k,v,q,out_proj}_proj_lora layers.
