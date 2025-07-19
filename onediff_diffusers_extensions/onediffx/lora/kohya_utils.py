@@ -233,6 +233,16 @@ def _convert_unet_lora_key(key: str) -> str:
     # Now convert remaining underscores to dots
     diffusers_name = diffusers_name.replace("_", ".")
     
+    # Restore module names that must have underscores (not dots)
+    diffusers_name = diffusers_name.replace("down.blocks", "down_blocks")
+    diffusers_name = diffusers_name.replace("up.blocks", "up_blocks")
+    diffusers_name = diffusers_name.replace("mid.block", "mid_block")
+    diffusers_name = diffusers_name.replace("time.embedding", "time_embedding")
+    diffusers_name = diffusers_name.replace("add.embedding", "add_embedding")
+    diffusers_name = diffusers_name.replace("conv.norm.out", "conv_norm_out")
+    diffusers_name = diffusers_name.replace("conv.in", "conv_in")
+    diffusers_name = diffusers_name.replace("conv.out", "conv_out")
+    
     # ResNet layer conversions (based on Kohya source)
     diffusers_name = diffusers_name.replace("in.layers.0.", "norm1.")
     diffusers_name = diffusers_name.replace("in.layers.2.", "conv1.")
