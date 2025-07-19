@@ -108,16 +108,97 @@ def convert_kohya_state_dict_to_diffusers(
 
 def _convert_unet_lora_key(key: str) -> str:
     """Convert UNet LoRA key from Kohya to Diffusers format."""
-    # Remove prefix and convert underscores to dots
-    diffusers_name = key.replace("lora_unet_", "").replace("_", ".")
+    # Remove prefix
+    diffusers_name = key.replace("lora_unet_", "")
     
-    # Block name conversions
-    diffusers_name = diffusers_name.replace("input.blocks", "down_blocks")
-    diffusers_name = diffusers_name.replace("down.blocks", "down_blocks")
-    diffusers_name = diffusers_name.replace("middle.block", "mid_block")
-    diffusers_name = diffusers_name.replace("mid.block", "mid_block")
-    diffusers_name = diffusers_name.replace("output.blocks", "up_blocks")
-    diffusers_name = diffusers_name.replace("up.blocks", "up_blocks")
+    # Based on Kohya scripts source code:
+    # input_blocks.{3*i + j + 1}.0 → down_blocks.{i}.resnets.{j}
+    # input_blocks.{3*i + j + 1}.1 → down_blocks.{i}.attentions.{j}
+    # input_blocks.{3*(i+1)}.0 → down_blocks.{i}.downsamplers.0
+    
+    # Handle input_blocks_X_Y pattern
+    if diffusers_name.startswith("input_blocks_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
+            input_block_num = int(parts[2])
+            inner_block_type = int(parts[3])
+            
+            # Special case for input_blocks.0 (conv_in)
+            if input_block_num == 0:
+                new_prefix = "conv_in"
+            else:
+                # Check if it's a downsampler block (occurs at 3, 6, 9)
+                if input_block_num % 3 == 0:
+                    block_id = (input_block_num // 3) - 1
+                    new_prefix = f"down_blocks.{block_id}.downsamplers.0"
+                else:
+                    # Regular blocks: compute block_id and layer_in_block
+                    # Formula: input_blocks.{3*i + j + 1} where i is block, j is layer
+                    block_id = (input_block_num - 1) // 3
+                    layer_in_block = (input_block_num - 1) % 3
+                    
+                    if inner_block_type == 0:
+                        new_prefix = f"down_blocks.{block_id}.resnets.{layer_in_block}"
+                    elif inner_block_type == 1:
+                        new_prefix = f"down_blocks.{block_id}.attentions.{layer_in_block}"
+                    else:
+                        # Fallback
+                        new_prefix = f"down_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
+            
+            # Replace the prefix and reconstruct
+            diffusers_name = new_prefix + "." + "_".join(parts[4:])
+    
+    # Handle output_blocks_X_Y pattern
+    elif diffusers_name.startswith("output_blocks_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
+            output_block_num = int(parts[2])
+            inner_block_type = int(parts[3])
+            
+            # Compute block_id and layer_in_block
+            block_id = output_block_num // 3
+            layer_in_block = output_block_num % 3
+            
+            # Upsamplers are at positions 2, 5, 8 (layer_in_block == 2)
+            if layer_in_block == 2 and inner_block_type == 2:
+                new_prefix = f"up_blocks.{block_id}.upsamplers.0"
+            else:
+                if inner_block_type == 0:
+                    new_prefix = f"up_blocks.{block_id}.resnets.{layer_in_block}"
+                elif inner_block_type == 1:
+                    new_prefix = f"up_blocks.{block_id}.attentions.{layer_in_block}"
+                else:
+                    # Fallback
+                    new_prefix = f"up_blocks.{block_id}.{inner_block_type}.{layer_in_block}"
+            
+            # Replace the prefix and reconstruct
+            diffusers_name = new_prefix + "." + "_".join(parts[4:])
+    
+    # Handle middle_block_X pattern
+    elif diffusers_name.startswith("middle_block_"):
+        parts = diffusers_name.split("_")
+        if len(parts) >= 3 and parts[2].isdigit():
+            middle_id = int(parts[2])
+            
+            # From Kohya source: middle_block.0 → mid_block.resnets.0
+            # middle_block.1 → mid_block.attentions.0
+            # middle_block.2 → mid_block.resnets.1
+            if middle_id == 0:
+                new_prefix = "mid_block.resnets.0"
+            elif middle_id == 1:
+                new_prefix = "mid_block.attentions.0"
+            elif middle_id == 2:
+                new_prefix = "mid_block.resnets.1"
+            else:
+                new_prefix = f"mid_block.{middle_id}"  # fallback
+            
+            # Replace the prefix and reconstruct
+            diffusers_name = new_prefix + "." + "_".join(parts[3:])
+    
+    # Now convert remaining underscores to dots
+    diffusers_name = diffusers_name.replace("_", ".")
+    
+    # Standard conversions
     diffusers_name = diffusers_name.replace("transformer.blocks", "transformer_blocks")
     
     # Attention layer conversions
