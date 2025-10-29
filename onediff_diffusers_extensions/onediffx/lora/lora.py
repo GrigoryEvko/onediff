@@ -8,7 +8,9 @@ import diffusers
 
 import torch
 from diffusers.loaders import LoraLoaderMixin
-from onediff.utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 from packaging import version
 
 if version.parse(diffusers.__version__) >= version.parse("0.21.0"):

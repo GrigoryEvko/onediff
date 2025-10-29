@@ -5,7 +5,9 @@ import torch
 
 from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from diffusers.utils import is_accelerate_available
-from onediff.utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .utils import _load_lora_and_optionally_fuse, is_peft_available
 

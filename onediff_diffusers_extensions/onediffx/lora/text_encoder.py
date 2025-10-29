@@ -20,7 +20,9 @@ else:
 
 from diffusers.models.modeling_utils import _LOW_CPU_MEM_USAGE_DEFAULT
 from diffusers.utils import is_accelerate_available
-from onediff.utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .utils import _load_lora_and_optionally_fuse
 

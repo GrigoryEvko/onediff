@@ -2,7 +2,6 @@ import time
 from pathlib import Path
 
 import pandas as pd
-import safetensors.torch
 import torch
 from diffusers import DiffusionPipeline
 from diffusers.utils.constants import USE_PEFT_BACKEND
@@ -10,6 +9,7 @@ from diffusers.utils.constants import USE_PEFT_BACKEND
 from onediff.infer_compiler import oneflow_compile
 from onediff.torch_utils import TensorInplaceAssign
 from onediffx.lora import load_and_fuse_lora, set_and_fuse_adapters, unfuse_lora
+from onediffx.lora.safetensors_utils import load_loras_batch
 
 if not USE_PEFT_BACKEND:
     raise RuntimeError(
@@ -41,15 +41,16 @@ pipe = DiffusionPipeline.from_pretrained(
     MODEL_ID, variant="fp16", torch_dtype=torch.float16
 ).to("cuda")
 
-LORA_MODEL_ID = [
-    "/share_nfs/onediff_ci/diffusers/loras/SDXL-Emoji-Lora-r4.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/sdxl_metal_lora.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/simple_drawing_xl_b1-000012.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/texta.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/watercolor_v1_sdxl_lora.safetensors",
+LORA_MODEL_PATHS = [
+    Path("/share_nfs/onediff_ci/diffusers/loras/SDXL-Emoji-Lora-r4.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/sdxl_metal_lora.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/simple_drawing_xl_b1-000012.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/texta.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/watercolor_v1_sdxl_lora.safetensors"),
 ]
 
-loras = {name: safetensors.torch.load_file(name) for name in LORA_MODEL_ID}
+# Use robust batch loader with proper error handling and direct GPU loading
+loras = load_loras_batch(LORA_MODEL_PATHS, device="cuda")
 pipe.unet = oneflow_compile(pipe.unet)
 generator = torch.manual_seed(0)
 
@@ -57,8 +58,8 @@ generator = torch.manual_seed(0)
 for i, (name, lora) in enumerate(loras.items()):
     load_and_fuse_lora(
         pipe,
-        lora.copy(),
-        adapter_name=Path(name).stem,
+        lora,  # No .copy() needed - saves memory
+        adapter_name=name,
         lora_scale=1.0,
         offload_device="cuda",
     )
@@ -84,7 +85,7 @@ pipe = DiffusionPipeline.from_pretrained(
     MODEL_ID, variant="fp16", torch_dtype=torch.float16
 ).to("cuda")
 for i, (name, lora) in enumerate(loras.items()):
-    pipe.load_lora_weights(lora.copy(), adapter_name=Path(name).stem, lora_scale=1.0)
+    pipe.load_lora_weights(lora, adapter_name=name, lora_scale=1.0)  # No .copy() needed
 
 peft_set_adapter_time = []
 for i, multi_lora in enumerate(multi_loras):

@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Dict, Tuple, Union, Optional
 import torch
 import safetensors.torch
-from onediff.utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def convert_kohya_state_dict_to_diffusers(
@@ -369,26 +371,30 @@ def is_kohya_state_dict(state_dict: Dict[str, torch.Tensor]) -> bool:
 def load_kohya_lora_direct(
     pretrained_model_name_or_path_or_dict: Union[str, Path, Dict[str, torch.Tensor]],
     device: Union[str, torch.device] = "cuda",
+    device_map: Optional[Union[str, Dict[str, str]]] = None,
     weight_name: Optional[str] = None,
     subfolder: Optional[str] = None,
     **kwargs
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
     """
     Load a Kohya format LoRA directly to the specified device, bypassing diffusers.
-    
+
     This function loads safetensors files directly to GPU memory, avoiding the CPU
     memory overhead of diffusers' loading process.
-    
+
+    **NEW:** Supports device_map for distributed loading!
+
     Args:
         pretrained_model_name_or_path_or_dict: Path to the LoRA file or directory
         device: Target device for tensor loading (default: "cuda")
+        device_map: Optional device mapping for distributed loading (NEW)
         weight_name: Specific weight file name (e.g., "pytorch_lora_weights.safetensors")
         subfolder: Subfolder within the model directory
-        **kwargs: Additional arguments (for compatibility)
-        
+        **kwargs: Additional arguments (strategy, use_async, etc.)
+
     Returns:
         Tuple of (converted_state_dict, network_alphas)
-        
+
     Raises:
         ValueError: If the file is not in Kohya format or file not found
     """
@@ -440,11 +446,17 @@ def load_kohya_lora_direct(
     if not lora_file.exists():
         raise ValueError(f"LoRA file not found: {lora_file}")
     
-    logger.info(f"[OneDiffX] Loading Kohya LoRA directly from {lora_file} to {device}")
-    
-    # Load directly to the target device
-    # Use safetensors to load directly to device
-    state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
+    # Import here to avoid circular dependency
+    from .safetensors_utils import load_safetensors_robust
+
+    # Load using robust loader with error handling, validation, and device_map support
+    state_dict = load_safetensors_robust(
+        lora_file=lora_file,
+        device=device,  # No str() conversion needed
+        device_map=device_map,  # NEW: Pass device_map for distributed loading
+        validate=True,
+        **{k: v for k, v in kwargs.items() if k in ['strategy', 'use_async', 'max_size_gb']}
+    )
     
     # Verify it's Kohya format
     if not is_kohya_state_dict(state_dict):

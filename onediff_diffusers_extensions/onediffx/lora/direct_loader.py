@@ -5,15 +5,27 @@ import os
 from pathlib import Path
 from typing import Dict, Tuple, Union, Optional
 import torch
-import safetensors.torch
-from onediff.utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .state_dict_utils import convert_state_dict_to_diffusers
+from .safetensors_utils import (
+    load_safetensors_robust,
+    inspect_safetensors_metadata,
+    detect_lora_format_from_keys,
+    clear_gpu_memory_cache,
+    SafetensorsLoadError,
+    SafetensorsValidationError,
+    SafetensorsCorruptedError,
+    DEFAULT_MAX_FILE_SIZE_GB
+)
 
 
 def load_lora_direct(
     pretrained_model_name_or_path_or_dict: Union[str, Path, Dict[str, torch.Tensor]],
     device: Union[str, torch.device] = "cuda",
+    device_map: Optional[Union[str, Dict[str, str]]] = None,
     weight_name: Optional[str] = None,
     subfolder: Optional[str] = None,
     unet_config: Optional[Dict] = None,
@@ -21,21 +33,26 @@ def load_lora_direct(
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
     """
     Load a LoRA directly to the specified device, bypassing diffusers' CPU loading.
-    
+
     This function loads safetensors files directly to GPU memory, then auto-detects
     the format (Kohya, PEFT, diffusers old/new) and converts as needed.
-    
+
+    **NEW:** Supports device_map for distributed loading and async loading!
+
     Args:
         pretrained_model_name_or_path_or_dict: Path to the LoRA file or directory
         device: Target device for tensor loading (default: "cuda")
+        device_map: Optional device mapping for distributed loading (NEW)
+                   - Simple string: "cuda:0"
+                   - Dict: {"layer1": "cuda:0", "layer2": "disk"}
         weight_name: Specific weight file name (e.g., "pytorch_lora_weights.safetensors")
         subfolder: Subfolder within the model directory
         unet_config: UNet configuration (passed to conversion if needed)
-        **kwargs: Additional arguments passed to conversion
-        
+        **kwargs: Additional arguments (strategy, use_async, etc.)
+
     Returns:
         Tuple of (state_dict, network_alphas)
-        
+
     Raises:
         ValueError: If file not found or loading fails
     """
@@ -100,11 +117,17 @@ def load_lora_direct(
     if not lora_file.exists():
         raise ValueError(f"LoRA file not found: {lora_file}")
     
-    logger.info(f"[OneDiffX Direct] Loading LoRA from {lora_file} directly to {device}")
-    
-    # Load directly to the target device
-    # Use safetensors to load directly to device
-    state_dict = safetensors.torch.load_file(str(lora_file), device=str(device))
+    # Load using robust loader with error handling, validation, and device_map support
+    state_dict = load_safetensors_robust(
+        lora_file=lora_file,
+        device=device,  # No str() conversion - supports Path and torch.device directly
+        device_map=device_map,  # NEW: Pass device_map for distributed loading
+        strategy=kwargs.get("strategy", "auto"),  # NEW: Strategy selection
+        use_async=kwargs.get("use_async", False),  # NEW: Async support
+        validate=True,
+        max_size_gb=kwargs.get("max_size_gb", DEFAULT_MAX_FILE_SIZE_GB),
+        use_streaming=kwargs.get("use_streaming", None)  # DEPRECATED
+    )
     
     # Convert format if needed (auto-detects format: Kohya, PEFT, diffusers old/new)
     # Pass unet_config if provided

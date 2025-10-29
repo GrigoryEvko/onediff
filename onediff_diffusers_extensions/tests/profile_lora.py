@@ -2,7 +2,6 @@ import time
 from pathlib import Path
 
 import pandas as pd
-import safetensors.torch
 
 import torch
 from diffusers import DiffusionPipeline
@@ -10,6 +9,7 @@ from diffusers import DiffusionPipeline
 from onediff.infer_compiler import oneflow_compile
 from onediff.torch_utils import TensorInplaceAssign
 from onediffx.lora import load_and_fuse_lora, unfuse_lora
+from onediffx.lora.safetensors_utils import load_loras_batch
 
 _time = None
 
@@ -38,23 +38,24 @@ pipe = DiffusionPipeline.from_pretrained(
     MODEL_ID, variant="fp16", torch_dtype=torch.float16
 ).to("cuda")
 
-LORA_MODEL_ID = [
-    "/share_nfs/onediff_ci/diffusers/loras/SDXL-Emoji-Lora-r4.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/sdxl_metal_lora.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/simple_drawing_xl_b1-000012.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/texta.safetensors",
-    "/share_nfs/onediff_ci/diffusers/loras/watercolor_v1_sdxl_lora.safetensors",
+LORA_MODEL_PATHS = [
+    Path("/share_nfs/onediff_ci/diffusers/loras/SDXL-Emoji-Lora-r4.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/sdxl_metal_lora.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/simple_drawing_xl_b1-000012.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/texta.safetensors"),
+    Path("/share_nfs/onediff_ci/diffusers/loras/watercolor_v1_sdxl_lora.safetensors"),
 ]
 
-loras = {name: safetensors.torch.load_file(name) for name in LORA_MODEL_ID}
+# Use robust batch loader with proper error handling and direct GPU loading
+loras = load_loras_batch(LORA_MODEL_PATHS, device="cuda")
 
 pipe.unet = oneflow_compile(pipe.unet)
 generator = torch.manual_seed(0)
 
 load_lora_weights_time = []
 for i, (name, lora) in enumerate(loras.items()):
-    with TimerContextManager("load_lora_weights", Path(name).stem):
-        pipe.load_lora_weights(lora.copy())
+    with TimerContextManager("load_lora_weights", name):
+        pipe.load_lora_weights(lora)  # No .copy() needed - saves memory
     load_lora_weights_time.append(_time)
 
 modules = [pipe.unet, pipe.text_encoder]
