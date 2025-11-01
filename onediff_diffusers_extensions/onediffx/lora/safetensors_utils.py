@@ -448,6 +448,7 @@ async def load_loras_batch_async(
     device: Union[str, torch.device] = "cuda",
     device_map: Optional[Union[str, Dict[str, str]]] = None,
     stop_on_error: bool = False,
+    continue_on_error: Optional[bool] = None,  # Backward compatibility
     **kwargs
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """
@@ -478,6 +479,10 @@ async def load_loras_batch_async(
         print(f"Loaded {len(loras)} LoRAs in parallel")
         ```
     """
+    # Backward compatibility: continue_on_error → stop_on_error
+    if continue_on_error is not None:
+        stop_on_error = not continue_on_error
+
     logger.info(f"[OneDiffX] 🚀 Async batch loading {len(lora_paths)} LoRAs in parallel")
     start_time = time.time()
 
