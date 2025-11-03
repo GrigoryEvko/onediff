@@ -49,7 +49,7 @@ def load_lora_into_text_encoder(
     cls,
     state_dict,
     network_alphas,
-    text_encoder_orig,
+    text_encoder,
     prefix=None,
     lora_scale=1.0,
     low_cpu_mem_usage=None,
@@ -85,7 +85,7 @@ def load_lora_into_text_encoder(
             `default_{i}` where i is the total number of adapters being loaded.
     """
     # Unwrap compiled module if needed (torch.compile creates OptimizedModule wrapper)
-    text_encoder = _unwrap_compiled_module(text_encoder_orig)
+    text_encoder = _unwrap_compiled_module(text_encoder)
 
     low_cpu_mem_usage = (
         low_cpu_mem_usage
