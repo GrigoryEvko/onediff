@@ -138,37 +138,23 @@ def _set_adapter(
 
         self.active_adapter_names[adapter] = weight
         self.scaling[adapter] = weight * self.lora_alpha[adapter] / self.r[adapter]
-
-        # Cast to fp32 inline - no intermediate fp32 variables stored!
-        # PyTorch frees the temporary fp32 tensors immediately after matmul
-        lora_a_tensor = self.lora_A[adapter]
-        lora_b_tensor = self.lora_B[adapter]
-
+        w_down = self.lora_A[adapter].float().to(device)
+        w_up = self.lora_B[adapter].float().to(device)
         if delta_weight is None:
-            delta_weight = get_delta_weight(
-                self,
-                lora_b_tensor.to(device=device, dtype=torch.float32),
-                lora_a_tensor.to(device=device, dtype=torch.float32),
-                self.scaling[adapter]
-            )
+            delta_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter])
         else:
-            delta_weight += get_delta_weight(
-                self,
-                lora_b_tensor.to(device=device, dtype=torch.float32),
-                lora_a_tensor.to(device=device, dtype=torch.float32),
-                self.scaling[adapter]
-            )
+            delta_weight += get_delta_weight(self, w_up, w_down, self.scaling[adapter])
 
     if delta_weight is not None:
-        # Truly in-place fusion: convert delta to target dtype, then add
-        # This avoids creating fp32 copies of self.weight.data (~3GB each)
+        # In-place fusion: convert self.weight to float32, add delta in-place, convert back
+        # This avoids allocating fused_weight (~3GB for large layers)
         if dtype != torch.float32:
-            # Convert delta to target dtype (small precision loss acceptable)
-            # Then add in-place - no copies of self.weight needed!
-            delta_converted = delta_weight.to(dtype=dtype, device=device)
-            self.weight.data.add_(delta_converted)
+            # Need to upcast to float32 for addition, then downcast back
+            self.weight.data = self.weight.data.float()
+            self.weight.data.add_(delta_weight)
+            self.weight.data = self.weight.data.to(dtype=dtype)
         else:
-            # Already float32, add in-place
+            # Already float32, can add in-place directly
             self.weight.data.add_(delta_weight)
 
 def _delete_adapter(
@@ -248,11 +234,10 @@ def _load_lora_and_optionally_fuse(
     down_key = prefix + ".down.weight"
     up_key = prefix + ".up.weight"
 
-    # Transfer tensors to device - keep in model's native dtype to save memory
-    # No need to force fp32 here, will convert during fusion if needed
-    w_down = state_dict[down_key].to(device=device, dtype=dtype)
-    w_up = state_dict[up_key].to(device=device, dtype=dtype)
-
+    # Transfer tensors to device
+    w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
+    w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
+    
     # Delete tensors from state dict to free CPU memory
     del state_dict[down_key]
     del state_dict[up_key]
@@ -288,11 +273,11 @@ def _load_lora_and_optionally_fuse(
         self.active_adapter_names[adapter_name] = lora_scale
 
         lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
-        # Truly in-place fusion: convert delta to target dtype, then add
+        # In-place fusion: avoids allocating fused_weight
         if dtype != torch.float32:
-            # Convert delta to target dtype, then add in-place (no weight copies)
-            delta_converted = lora_weight.to(dtype=dtype, device=device)
-            self.weight.data.add_(delta_converted)
+            self.weight.data = self.weight.data.float()
+            self.weight.data.add_(lora_weight)
+            self.weight.data = self.weight.data.to(dtype=dtype)
         else:
             self.weight.data.add_(lora_weight)
 
