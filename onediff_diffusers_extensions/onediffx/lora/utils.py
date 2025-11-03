@@ -146,8 +146,16 @@ def _set_adapter(
             delta_weight += get_delta_weight(self, w_up, w_down, self.scaling[adapter])
 
     if delta_weight is not None:
-        fused_weight = self.weight.data.float() + delta_weight
-        self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
+        # In-place fusion: convert self.weight to float32, add delta in-place, convert back
+        # This avoids allocating fused_weight (~3GB for large layers)
+        if dtype != torch.float32:
+            # Need to upcast to float32 for addition, then downcast back
+            self.weight.data = self.weight.data.float()
+            self.weight.data.add_(delta_weight)
+            self.weight.data = self.weight.data.to(dtype=dtype)
+        else:
+            # Already float32, can add in-place directly
+            self.weight.data.add_(delta_weight)
 
 def _delete_adapter(
     self: Union[torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d],
@@ -263,10 +271,15 @@ def _load_lora_and_optionally_fuse(
                 "Otherwise, it may lead to accuracy issues, impacting the quality of the generated images."
             )
         self.active_adapter_names[adapter_name] = lora_scale
-        
+
         lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
-        fused_weight = self.weight.data.float() + lora_weight
-        self.weight.data.copy_(fused_weight.to(device=device, dtype=dtype))
+        # In-place fusion: avoids allocating fused_weight
+        if dtype != torch.float32:
+            self.weight.data = self.weight.data.float()
+            self.weight.data.add_(lora_weight)
+            self.weight.data = self.weight.data.to(dtype=dtype)
+        else:
+            self.weight.data.add_(lora_weight)
 
 
 def _unfuse_lora(
