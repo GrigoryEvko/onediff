@@ -32,12 +32,24 @@ if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook, CpuOffload, remove_hook_from_module
 
 
+def _unwrap_compiled_module(module):
+    """
+    Unwrap torch.compile OptimizedModule to get the underlying module.
+    Returns the original module if not compiled.
+    """
+    # Check if it's a torch.compile OptimizedModule
+    if hasattr(module, '_orig_mod'):
+        # torch.compile wraps the original module in _orig_mod
+        return module._orig_mod
+    return module
+
+
 # The code is mainly referenced from https://github.com/huggingface/diffusers/blob/b09b90e24c7ef0252a1a587939972c2e02d305a6/src/diffusers/loaders/lora.py#L485
 def load_lora_into_text_encoder(
     cls,
     state_dict,
     network_alphas,
-    text_encoder,
+    text_encoder_orig,
     prefix=None,
     lora_scale=1.0,
     low_cpu_mem_usage=None,
@@ -72,6 +84,9 @@ def load_lora_into_text_encoder(
             Adapter name to be used for referencing the loaded adapter model. If not specified, it will use
             `default_{i}` where i is the total number of adapters being loaded.
     """
+    # Unwrap compiled module if needed (torch.compile creates OptimizedModule wrapper)
+    text_encoder = _unwrap_compiled_module(text_encoder_orig)
+
     low_cpu_mem_usage = (
         low_cpu_mem_usage
         if low_cpu_mem_usage is not None
