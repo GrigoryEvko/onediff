@@ -138,24 +138,17 @@ def _set_adapter(
 
         self.active_adapter_names[adapter] = weight
         self.scaling[adapter] = weight * self.lora_alpha[adapter] / self.r[adapter]
-        w_down = self.lora_A[adapter].float().to(device)
-        w_up = self.lora_B[adapter].float().to(device)
+        w_down = self.lora_A[adapter].to(device=device, dtype=dtype)
+        w_up = self.lora_B[adapter].to(device=device, dtype=dtype)
         if delta_weight is None:
             delta_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter])
         else:
             delta_weight += get_delta_weight(self, w_up, w_down, self.scaling[adapter])
 
     if delta_weight is not None:
-        # In-place fusion: convert self.weight to float32, add delta in-place, convert back
-        # This avoids allocating fused_weight (~3GB for large layers)
-        if dtype != torch.float32:
-            # Need to upcast to float32 for addition, then downcast back
-            self.weight.data = self.weight.data.float()
-            self.weight.data.add_(delta_weight)
-            self.weight.data = self.weight.data.to(dtype=dtype)
-        else:
-            # Already float32, can add in-place directly
-            self.weight.data.add_(delta_weight)
+        # In-place fusion in native precision (fp16/bf16)
+        # delta_weight already in correct dtype from w_down/w_up
+        self.weight.data.add_(delta_weight)
 
 def _delete_adapter(
     self: Union[torch.nn.Linear, PatchedLoraProjection, torch.nn.Conv2d],
@@ -234,9 +227,9 @@ def _load_lora_and_optionally_fuse(
     down_key = prefix + ".down.weight"
     up_key = prefix + ".up.weight"
 
-    # Transfer tensors to device
-    w_down = state_dict[down_key].to(device=device, dtype=torch.float32)
-    w_up = state_dict[up_key].to(device=device, dtype=torch.float32)
+    # Transfer tensors to device in native precision
+    w_down = state_dict[down_key].to(device=device, dtype=dtype)
+    w_up = state_dict[up_key].to(device=device, dtype=dtype)
     
     # Delete tensors from state dict to free CPU memory
     del state_dict[down_key]
@@ -273,13 +266,9 @@ def _load_lora_and_optionally_fuse(
         self.active_adapter_names[adapter_name] = lora_scale
 
         lora_weight = get_delta_weight(self, w_up, w_down, self.scaling[adapter_name])
-        # In-place fusion: avoids allocating fused_weight
-        if dtype != torch.float32:
-            self.weight.data = self.weight.data.float()
-            self.weight.data.add_(lora_weight)
-            self.weight.data = self.weight.data.to(dtype=dtype)
-        else:
-            self.weight.data.add_(lora_weight)
+        # In-place fusion in native precision (fp16/bf16)
+        # lora_weight already in correct dtype from w_down/w_up
+        self.weight.data.add_(lora_weight)
 
 
 def _unfuse_lora(
